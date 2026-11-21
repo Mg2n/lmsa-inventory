@@ -1,0 +1,12 @@
+{
+  "SqlServer": ".",
+  "SqlDatabase": "spark",
+  "SqlUser": "inventory_sync",
+  "SqlPassword": "<set by install.ps1 - never commit>",
+  "IngestUrl": "https://gkehjkttaowtjabofpsq.supabase.co/functions/v1/erp-ingest",
+  "SyncSecret": "<set by install.ps1 - never commit>",
+  "BatchSize": 500,
+  "FullSyncHours": 24,
+  "SqlTimeoutSeconds": 60,
+  "MaxRunSeconds": 110
+}

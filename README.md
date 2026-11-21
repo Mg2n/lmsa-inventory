@@ -1,0 +1,180 @@
+# Clothing store inventory scanner (Spark Tech)
+
+Staff scan a product's barcode with their phone and see how many units Spark Tech says are in stock and **where they are stored**. Spark Tech stays the cash register and the source of truth for products, barcodes and stock. We copy that data **read-only** and add the storage locations Spark Tech doesn't have.
+
+```
+Spark Tech ERP (SQL Server "spark", store PC — never written to)
+        │ read-only SELECT … WITH (NOLOCK), every 5 minutes, only changed rows
+        ▼
+Sync agent (PowerShell 5.1 scheduled task, C:\InventorySync)
+        │ HTTPS + shared secret
+        ▼
+Supabase: erp-ingest Edge Function → Postgres (RLS) ◄── Web app (Next.js PWA on Vercel)
+                                                          phone Scanner + PC Dashboard
+```
+
+| Piece | Where |
+|---|---|
+| Supabase project | `lmsa-inventory` · ref `gkehjkttaowtjabofpsq` · eu-central-1 · https://supabase.com/dashboard/project/gkehjkttaowtjabofpsq |
+| Database (schema, RLS, RPCs, ingest) | `supabase/migrations/*.sql` (already applied) |
+| Edge Functions | `supabase/functions/erp-ingest`, `supabase/functions/admin-users` (already deployed) |
+| Web app | `web/` (Next.js 15, App Router, TypeScript, Tailwind v4, static export) |
+| Sync agent | `agent/InventorySync.ps1`, `agent/install.ps1`, `agent/uninstall.ps1` |
+| Sample Spark-shaped data | `supabase/fixtures/spark_sample.json` (`scripts/make-fixture.mjs`) |
+| Sync secret (local only, git-ignored) | `secrets/sync_secret.txt` |
+
+---
+
+## 1. Supabase (already done — for reference / a new project)
+
+1. Apply the migrations in `supabase/migrations/` in order (SQL editor or `supabase db push`), then `supabase/seed.sql` for 18 demo shelf locations.
+2. Deploy both functions **with JWT verification off** (they authenticate themselves):
+   `supabase functions deploy erp-ingest --no-verify-jwt` and `supabase functions deploy admin-users --no-verify-jwt`.
+3. Set the agent's shared secret (only its hash is stored):
+   ```sql
+   insert into private.sync_config (id, secret_hash)
+   values (1, encode(extensions.digest('PASTE-SECRET-HERE', 'sha256'), 'hex'))
+   on conflict (id) do update set secret_hash = excluded.secret_hash, updated_at = now();
+   ```
+   To rotate: generate a new secret (`openssl rand -hex 32`), run the SQL above, update `SyncSecret` in `C:\InventorySync\config.json`.
+4. **Auth settings (dashboard → Authentication):**
+   - Sign In / Providers → Email: turn **off** "Allow new users to sign up" (accounts are created by an admin). Even if left on, new sign-ups get role `pending` and can't see anything.
+   - URL Configuration → Site URL: your Vercel URL.
+5. **First admin:** Authentication → Users → *Add user* (email + password, "auto confirm"). The **first** user ever created becomes `admin` automatically; everyone after that is `pending` until an admin approves them (or is created from the Users page with a role).
+
+## 2. Web app — run locally
+
+```bash
+cd web
+cp .env.example .env.local   # URL + publishable key (safe for the browser)
+npm install
+npm run dev                  # http://localhost:3000
+```
+
+Checks: `npx tsc --noEmit`, `npm run lint`, `npm run build` (static site in `web/out`).
+
+## 3. Deploy to Vercel (free tier, HTTPS is required for the camera)
+
+1. Push this folder to a GitHub repository.
+2. vercel.com → *Add New… → Project* → import the repo.
+3. **Root Directory:** `web` · Framework: Next.js (auto) · Build command/Output: defaults.
+4. Environment variables (Production + Preview):
+   - `NEXT_PUBLIC_SUPABASE_URL` = `https://gkehjkttaowtjabofpsq.supabase.co`
+   - `NEXT_PUBLIC_SUPABASE_ANON_KEY` = `sb_publishable_0LQKqBEnaw9fmLKISQKW-g_-8IlIuBL`
+5. Deploy. Every later `git push` redeploys; phones and the PC pick it up automatically (see Auto-update).
+6. Put the Vercel URL in Supabase → Authentication → URL Configuration → Site URL.
+
+(CLI alternative: `npm i -g vercel`, then `cd web && vercel --prod`.)
+
+### Add to an iPhone home screen
+1. Open the Vercel URL in **Safari** (not Chrome) → log in.
+2. Share button → **Add to Home Screen** → Add.
+3. Open it from the home-screen icon; allow camera access the first time.
+(Android/Chrome: menu → *Install app*.)
+
+### Auto-update (no reinstalling)
+- Each build writes `/version.json` with a build id (Vercel git SHA) and bakes the same id into the app.
+- The app checks `/version.json` on launch, when it comes back to the foreground and every 30 minutes. If it differs: a small **"إصدار جديد متوفر — اضغط للتحديث"** banner. Tapping it clears the service-worker caches and reloads.
+- The service worker (`web/public/sw.js`) is network-first for pages and cache-first for hashed `/_next/static` files, so a new deploy is never hidden behind an old cache. Supabase calls are never cached.
+
+## 4. Install the sync agent on the store PC
+
+Requirements: Windows 10 (built-in PowerShell 5.1). **Nothing is installed**; no Node/Python.
+
+**a. Create the read-only SQL login (done once by whoever administers SQL Server, in SSMS):**
+```sql
+USE [master];
+CREATE LOGIN [inventory_sync] WITH PASSWORD = N'<strong password>', CHECK_POLICY = ON;
+USE [spark];
+CREATE USER [inventory_sync] FOR LOGIN [inventory_sync];
+GRANT SELECT ON dbo.ITEMES      TO [inventory_sync];
+GRANT SELECT ON dbo.ITMUNIT     TO [inventory_sync];
+GRANT SELECT ON dbo.ITEMSMASTER TO [inventory_sync];
+GRANT SELECT ON dbo.ITMSALES    TO [inventory_sync];
+GRANT SELECT ON dbo.WAREHOUSES  TO [inventory_sync];
+```
+(The agent refuses to run with any other login and never touches `USERINFO` or `ZATCA*`.)
+
+**b. Install:**
+1. Copy the `agent` folder to the store PC (USB stick is fine), e.g. `C:\Users\<you>\Desktop\agent`.
+2. Start → type *PowerShell* → right-click → **Run as administrator**.
+3. Run:
+   ```powershell
+   cd $HOME\Desktop\agent
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -IngestUrl https://gkehjkttaowtjabofpsq.supabase.co/functions/v1/erp-ingest
+   ```
+4. It asks for the `inventory_sync` SQL password and the **sync secret** (the contents of `secrets/sync_secret.txt` — give it to whoever installs, don't email it in plain text if you can avoid it).
+5. It writes `C:\InventorySync\config.json` (readable only by Administrators, SYSTEM and you), runs a **dry run** (reads Spark Tech, writes `C:\InventorySync\out\dryrun-*.json`, sends nothing), and only if that succeeds registers the task.
+6. Within ~1 minute the dashboard's *Sync* page shows the first run.
+
+**Useful commands (PowerShell):**
+```powershell
+Start-ScheduledTask -TaskName InventorySync               # run now
+Get-ScheduledTaskInfo -TaskName InventorySync             # last result (0 = OK, 2 = skipped, already running)
+Get-Content C:\InventorySync\logs\sync-$(Get-Date -Format yyyyMMdd).log -Tail 30
+powershell -ExecutionPolicy Bypass -File C:\InventorySync\InventorySync.ps1 -DryRun   # read only, writes JSON locally
+powershell -ExecutionPolicy Bypass -File C:\InventorySync\InventorySync.ps1 -Full     # force a full snapshot
+powershell -ExecutionPolicy Bypass -File .\uninstall.ps1  # remove task + folder (-KeepLogs to keep logs)
+```
+
+**What a run does:** below-normal priority · single instance (mutex + task setting) · TLS 1.2 · 4 SELECTs (`ITEMSMASTER` is summed per item+warehouse in SQL) · 60 s SQL timeout · compares with the last successful run and sends **only changed rows and deletions** in batches of 500 · full snapshot once every 24 h (lets the server drop rows deleted in Spark Tech) · 2-minute hard limit · retries network/5xx errors (2 s, 5 s, 10 s) · reports every run to `sync_runs` · log files kept 7 days. In a typical 5-minute window almost nothing changes, so a run is a few seconds of SQL reads and one or two small HTTPS calls.
+
+## 5. Using it
+
+**Phone — Scanner (`/scan`)**: point the camera at the label (vibration on Android + a short beep on every phone). The card shows the Arabic name, price, the **big Spark Tech quantity**, reserved quantity, and each storage location with its quantity. Quick actions: *add to location*, *move* (part or all), *edit quantity* (0 removes). Not found → "غير موجود في سبارك تك" + last sync time. Typing text searches by name (Arabic spelling-tolerant: ة/ه, أ/ا, ى/ي), item code or barcode. Scanning a **shelf label** shows what's on that shelf.
+
+**Phone — Shelf setup (`/scan/setup`)**: scan a shelf label once, then scan items one after another. Two modes: *all unlocated quantity* (puts the item's remaining Spark Tech quantity on this shelf) or *count piece by piece* (+1 per scan). Tap a line to correct it. Scan another shelf label to switch.
+
+**PC — Dashboard (`/dashboard`)**: products with stock and locations; filters *no location*, *negative stock*, *below reorder level*, *mismatch* (location total ≠ Spark Tech total); every search box accepts a USB barcode scanner (it types + Enter). *Locations & labels*: create a whole grid (e.g. zone A × 3 aisles × 4 shelves → `A-01-S1` …), single locations, activate/deactivate, print Code 128 shelf labels (A4, 3 per row). *Sync*: last successful sync, rows, errors, a red warning after 15 minutes without a sync, and barcode data-quality notes. *Quantity check*: the stock formula next to the raw columns to compare with Spark Tech. *Users* (admin): create accounts, change roles, reset passwords.
+
+## 6. Test checklist
+
+Backend (already run during the build — re-run after changes):
+- [x] `node scripts/test-ingest.mjs` with `INGEST_URL` and `SYNC_SECRET`: start → batches → finish OK; wrong secret → 401; GET → 405.
+- [x] `lookup_barcode('  010014tr ')` → 2 products (duplicate barcode), `0900044LA` → by barcode, `90003` → by item code, unknown → `found:false` + last sync, `999` → negative stock flagged.
+- [x] set/add/move RPCs: quantities, mismatch flag and `location_movements` rows correct.
+- [x] Arabic search `منوعة` finds `ملابس منوعه`.
+- [x] Security: anon can't read or call anything; `pending` user sees 0 products and can't write or self-promote; staff can't create locations, can't write `erp_*`, can't call `erp_ingest`.
+- [x] Agent (fixture mode, real Edge Function): first run FULL, second run sends nothing, changed qty + deleted item → +1/−1 only, `-DryRun` writes JSON and sends nothing, bad secret → exit 1 with logged 401, SQL guard refuses 10 kinds of non-SELECT/unsafe SQL.
+- [x] Web: `tsc`, `eslint`, `next build` clean; login page renders RTL on a phone viewport.
+
+To do on site (needs the real devices / data):
+- [ ] Create the first admin (section 1.5), log in on the PC and on an iPhone.
+- [ ] Scan 5 different real labels (Code 128 with suffixes like `010014Tr`, one EAN-13): each opens the right item.
+- [ ] Turn the phone camera permission off → manual entry still works.
+- [ ] On the store PC: create the SQL login, run `install.ps1`, confirm the dry-run JSON looks right, then the first sync appears on the *Sync* page.
+- [ ] **Verify the stock formula** on the *Quantity check* page for ~5 items (include one generic "ملابس منوعه" and one recently sold) against what Spark Tech shows. Adjust `qty_computed` in `erp_stock` if it differs.
+- [ ] Verify `ACTIVATE`/`ITMSTOP` meaning on one stopped item (see Decisions).
+- [ ] Ring up a sale in Spark Tech → within 5 minutes the scanned quantity drops by one.
+- [ ] Watch the checkout PC during a sync (Task Manager): no noticeable slowdown.
+- [ ] Shelf setup: create zone A, print labels, label 2 shelves, scan 10 items in.
+- [ ] Deploy a trivial change → the "new version" banner appears on the phone.
+- [ ] Unplug the store PC's network for 20 minutes → red "no sync" warning on the dashboard.
+
+## Decisions
+
+- **New Supabase project** `lmsa-inventory` (eu-central-1, $0/month) so the store's data is separate from other apps.
+- **Static Next.js export** (no server code): fast, cacheable, light on the old PC, trivially hosted on Vercel; auth runs in the browser with Supabase and is enforced by RLS. A native wrapper (Capacitor) can load the same build later.
+- **Arabic only, RTL**, font IBM Plex Sans Arabic. Strings are inline Arabic for now (English toggle = TODO).
+- **Roles:** `admin`, `staff`, plus `pending` for unapproved accounts. The first account becomes admin. User creation runs in the `admin-users` Edge Function so the service-role key never reaches the browser.
+- **All location writes go through RPCs** (`set_/add_/move_product_location`) that check the role and always write `location_movements`. Staff can't edit `product_locations` directly.
+- **Barcodes:** normalised by removing all whitespace/control characters and upper-casing (same rule in SQL and the app). `barcode_norm` is **indexed, not unique**, because the real data has duplicates; a scan that matches several items shows a picker, and duplicates / odd values are listed on the *Sync* page (`v_barcode_issues`). Empty barcodes are skipped. If nothing matches, the scan falls back to an exact item code.
+- **Single branch assumed:** our tables (`product_locations`) key on `itmcode`; the `erp_*` tables keep `brnid`.
+- **Stock:** `qty_computed` is a generated column with the formula from the spec, summed per item; `RESERVQTY` is shown separately. Because ITEMSMASTER has ~6 rows per item, the agent sums them per item + warehouse inside SQL Server (`GROUP BY`) — 6× less work for the old PC. The check page therefore shows warehouse totals.
+- **"Mismatch"** = the item has at least one location and the location total ≠ Spark Tech total. Items with no location are their own filter ("no location", only items with stock > 0).
+- **ACTIVATE / ITMSTOP:** `is_active = (ACTIVATE empty or truthy) and not ITMSTOP`. Raw values are kept in `activate_raw`/`itmstop_raw` until verified on site.
+- **Sync = change detection, not full reloads:** the agent keeps the last snapshot in `C:\InventorySync\state` and sends only changes + deletions; a full snapshot every 24 h lets the server purge rows that disappeared. Safety: the purge never removes more than half a table at once, and the agent refuses to sync if ITEMES returns 0 rows.
+- **Shared secret stored as a SHA-256 hash in the database** (`private.sync_config`) so it can be rotated with one SQL statement; the Edge Function calls `erp_ingest()` with the service role, and that function is not executable by browsers.
+- **Scheduled task runs as SYSTEM** so it works when nobody is logged in; `config.json` is therefore readable by Administrators, SYSTEM and the installing user only.
+- **Dates in agent logs** use the invariant (Gregorian) calendar even on an Arabic/Hijri Windows locale.
+- `sync_runs` older than 30 days are deleted automatically.
+- Supabase security advisor shows "signed-in users can execute SECURITY DEFINER functions" for the location/role RPCs — intentional: each one checks the caller's role first. `private.sync_config` has RLS with no policies on purpose (no API access at all).
+
+## TODO (skipped in v1)
+
+- [ ] Copy new ITMSALES lines into `erp_sales` (table exists; need the real line-serial column from Spark Tech, then add a `sales` table to the agent with a "since last key" query).
+- [ ] CSV export of products / movements.
+- [ ] Realtime updates on the dashboard when a phone changes a location (Supabase Realtime on `product_locations`).
+- [ ] English toggle (move inline strings to a dictionary).
+- [ ] Movement history page (data is already logged in `location_movements`).
+- [ ] Sync-agent self-update (version file in Supabase Storage, SHA-256 check, swap + rollback). The script already has `$AgentVersion` and reports it on every run.

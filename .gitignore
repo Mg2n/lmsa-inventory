@@ -1,0 +1,11 @@
+node_modules/
+.next/
+out/
+.env*
+!.env.example
+*.local
+*.local.*
+secrets/
+agent/out/
+.DS_Store
+.vercel

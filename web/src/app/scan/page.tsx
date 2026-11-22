@@ -115,9 +115,12 @@ function ScanScreen() {
 
       {view.kind === "product" && (
         <ProductCard
+          key={view.product.itmcode}
           product={view.product}
+          autoAssign
           onChange={(p) => setView({ kind: "product", product: p })}
-          onToast={toast.show}
+          onToast={(msg, tone) => toast.show(tone === "error" ? msg : `${msg} — امسح الصنف التالي`, tone)}
+          onSaved={() => setView({ kind: "idle" })}
         />
       )}
 

@@ -2,8 +2,9 @@
 
 import { useMemo, useState } from "react";
 import { errorText, supabase } from "@/lib/supabase";
-import { fmtPrice, fmtQty, normCode } from "@/lib/format";
+import { feedback, fmtPrice, fmtQty, normCode } from "@/lib/format";
 import type { Location, Product, ProductLocation } from "@/lib/types";
+import { Scanner } from "./Scanner";
 import { Sheet, useLocations } from "./ui";
 
 type Action =
@@ -12,17 +13,27 @@ type Action =
   | { kind: "set"; at: ProductLocation }
   | null;
 
-/** Result card: name, price, big Spark Tech quantity, storage locations + quick actions. */
+/**
+ * Result card: name, price, big Spark Tech quantity, storage locations + quick actions.
+ * autoAssign: open "add to location" straight away when the item has no location yet.
+ * onSaved: called after any successful save (the scanner uses it to go back to the camera).
+ */
 export function ProductCard({
   product,
   onChange,
   onToast,
+  autoAssign = false,
+  onSaved,
 }: {
   product: Product;
   onChange: (p: Product) => void;
   onToast?: (msg: string, tone?: "ok" | "error") => void;
+  autoAssign?: boolean;
+  onSaved?: (p: Product) => void;
 }) {
-  const [action, setAction] = useState<Action>(null);
+  const [action, setAction] = useState<Action>(() =>
+    autoAssign && product.locations.length === 0 ? { kind: "assign" } : null,
+  );
   const p = product;
   const unlocated = Math.max(Number(p.total_qty) - Number(p.located_qty), 0);
 
@@ -108,6 +119,7 @@ export function ProductCard({
             onChange(np);
             onToast?.(msg);
             setAction(null);
+            onSaved?.(np);
           }}
           onError={(m) => onToast?.(m, "error")}
         />
@@ -137,11 +149,22 @@ function ActionSheet({
     action.kind === "move" ? Number(action.from.qty) : action.kind === "set" ? Number(action.at.qty) : defaultQty ?? 1;
   const [qty, setQty] = useState<number>(initial);
   const [busy, setBusy] = useState(false);
+  const [scanning, setScanning] = useState(false);
 
   const title =
     action.kind === "assign" ? "إضافة إلى موقع" : action.kind === "move" ? `نقل من ${action.from.code}` : `تعديل الكمية في ${action.at.code}`;
   const needsTarget = action.kind !== "set";
   const maxQty = action.kind === "move" ? Number(action.from.qty) : undefined;
+  const choices = locations.filter((l) => l.is_active && (action.kind !== "move" || l.id !== action.from.location_id));
+
+  // scanning a shelf label picks that shelf
+  function onShelfScanned(code: string) {
+    const l = choices.find((c) => c.code === normCode(code));
+    if (!l) return feedback(false);
+    feedback(true);
+    setTarget(l);
+    setScanning(false);
+  }
 
   async function save() {
     setBusy(true);
@@ -168,13 +191,22 @@ function ActionSheet({
   return (
     <Sheet open onClose={onClose} title={title}>
       <div className="space-y-4">
-        {needsTarget && (
-          <LocationPicker
-            locations={locations.filter((l) => l.is_active && (action.kind !== "move" || l.id !== action.from.location_id))}
-            value={target}
-            onChange={setTarget}
-          />
-        )}
+        {needsTarget &&
+          (scanning ? (
+            <div className="space-y-2">
+              <Scanner active onDetected={onShelfScanned} className="aspect-[4/3] w-full" />
+              <button type="button" className="btn-soft w-full py-2" onClick={() => setScanning(false)}>
+                اختيار من القائمة بدلاً من ذلك
+              </button>
+            </div>
+          ) : (
+            <>
+              <button type="button" className="btn-olive w-full py-3" onClick={() => setScanning(true)}>
+                📷 امسح ملصق الرف
+              </button>
+              <LocationPicker locations={choices} value={target} onChange={setTarget} />
+            </>
+          ))}
         <QtyStepper value={qty} onChange={setQty} max={maxQty} min={action.kind === "set" ? 0 : 1} />
         <button className="btn-primary w-full text-lg" disabled={busy || (needsTarget && !target)} onClick={save}>
           {busy ? "جارٍ الحفظ…" : "حفظ"}

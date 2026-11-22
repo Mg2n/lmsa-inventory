@@ -36,7 +36,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 
-$AgentVersion = '1.0.0'
+$AgentVersion = '1.1.0'
 $Root = $PSScriptRoot
 $LogDir = Join-Path $Root 'logs'
 $StateDir = Join-Path $Root 'state'
@@ -315,10 +315,14 @@ try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'BelowNo
 [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
 [System.Net.ServicePointManager]::Expect100Continue = $false
 
-$mutex = New-Object System.Threading.Mutex($false, 'Global\InventorySyncAgent')
-$haveLock = $false
-try { $haveLock = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $haveLock = $true }
-if (-not $haveLock) { Write-Log 'INFO' 'Previous run still in progress - skipping.'; exit 2 }
+# One run at a time, across all Windows sessions: an exclusively opened lock file.
+# (A Global\ mutex needs a privilege the non-admin inventory_sync account does not have.)
+$lock = $null
+try {
+    $lock = [System.IO.File]::Open((Join-Path $StateDir 'run.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
+} catch [System.IO.IOException] {
+    Write-Log 'INFO' 'Previous run still in progress - skipping.'; exit 2
+}
 
 $exitCode = 0
 $runId = $null
@@ -345,12 +349,26 @@ try {
         foreach ($t in $Tables.Keys) { $current[$t] = Read-FixtureTable $fixture $t $Tables[$t] }
     } else {
         if ($config.SqlUser -ne 'inventory_sync') { throw "Refusing to run: SqlUser must be 'inventory_sync' (read-only login)." }
+        $auth = 'Sql'; if ($config.PSObject.Properties['SqlAuth'] -and $config.SqlAuth) { $auth = [string]$config.SqlAuth }
         Add-Type -AssemblyName System.Data
         $csb = New-Object System.Data.SqlClient.SqlConnectionStringBuilder
         $csb['Data Source'] = $(if ($config.SqlServer) { $config.SqlServer } else { '.' })
-        $csb['Initial Catalog'] = $(if ($config.SqlDatabase) { $config.SqlDatabase } else { 'spark' })
-        $csb['User ID'] = $config.SqlUser
-        $csb['Password'] = $config.SqlPassword
+        $csb['Initial Catalog'] = $(if ($config.SqlDatabase) { $config.SqlDatabase } else { 'Spark' })
+        if ($auth -eq 'Windows') {
+            # SQL Server in "Windows Authentication mode": connect as the Windows account
+            # this process runs as, and only ever as the dedicated read-only account.
+            $me = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+            if ($me.Name.Split('\')[-1] -ne $config.SqlUser) {
+                throw ("Refusing to run as '{0}': this agent must run as the Windows account '{1}' (use the scheduled task: Start-ScheduledTask -TaskName InventorySync)." -f $me.Name, $config.SqlUser)
+            }
+            if ((New-Object System.Security.Principal.WindowsPrincipal($me)).IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+                throw "Refusing to run: the '$($config.SqlUser)' account must not be an Administrator."
+            }
+            $csb['Integrated Security'] = $true
+        } elseif ($auth -eq 'Sql') {
+            $csb['User ID'] = $config.SqlUser
+            $csb['Password'] = $config.SqlPassword
+        } else { throw "Unknown SqlAuth '$auth' (expected Windows or Sql)." }
         $csb['Connect Timeout'] = 15
         $csb['Application Name'] = "InventorySync $AgentVersion (read-only)"
         $csb['ApplicationIntent'] = 'ReadOnly'
@@ -444,7 +462,6 @@ try {
         } catch { Write-Log 'ERROR' ('Could not report the error: ' + $_.Exception.Message) }
     }
 } finally {
-    if ($haveLock) { $mutex.ReleaseMutex() }
-    $mutex.Dispose()
+    if ($lock) { $lock.Dispose() }
 }
 exit $exitCode

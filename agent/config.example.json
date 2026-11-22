@@ -1,8 +1,8 @@
 {
   "SqlServer": ".",
-  "SqlDatabase": "spark",
+  "SqlDatabase": "Spark",
+  "SqlAuth": "Windows",
   "SqlUser": "inventory_sync",
-  "SqlPassword": "<set by install.ps1 - never commit>",
   "IngestUrl": "https://gkehjkttaowtjabofpsq.supabase.co/functions/v1/erp-ingest",
   "SyncSecret": "<set by install.ps1 - never commit>",
   "BatchSize": 500,

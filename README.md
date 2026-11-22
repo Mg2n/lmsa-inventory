@@ -81,43 +81,41 @@ Checks: `npx tsc --noEmit`, `npm run lint`, `npm run build` (static site in `web
 
 Requirements: Windows 10 (built-in PowerShell 5.1). **Nothing is installed**; no Node/Python.
 
-**a. Create the read-only SQL login (done once by whoever administers SQL Server, in SSMS):**
-```sql
-USE [master];
-CREATE LOGIN [inventory_sync] WITH PASSWORD = N'<strong password>', CHECK_POLICY = ON;
-USE [spark];
-CREATE USER [inventory_sync] FOR LOGIN [inventory_sync];
-GRANT SELECT ON dbo.ITEMES      TO [inventory_sync];
-GRANT SELECT ON dbo.ITMUNIT     TO [inventory_sync];
-GRANT SELECT ON dbo.ITEMSMASTER TO [inventory_sync];
-GRANT SELECT ON dbo.ITMSALES    TO [inventory_sync];
-GRANT SELECT ON dbo.WAREHOUSES  TO [inventory_sync];
-```
-(The agent refuses to run with any other login and never touches `USERINFO` or `ZATCA*`.)
+The store's SQL Server uses **Windows Authentication mode** only, so the agent signs in with a
+dedicated **local Windows account `inventory_sync`** (a normal user, not an administrator) instead of
+a SQL login. SQL Server's settings are not changed and nothing is restarted.
 
-**b. Install:**
-1. Copy the `agent` folder to the store PC (USB stick is fine), e.g. `C:\Users\<you>\Desktop\agent`.
+**What you need:** the `agent` folder (or `InventorySync-agent.zip`), the **sync secret**
+(`secrets/sync_secret.txt` on the project owner's Mac), and someone who can sign in to SSMS on the
+store PC with admin rights (Windows Authentication, as Spark Tech's admin normally does).
+
+1. Copy the `agent` folder to the store PC's Desktop (zip from Drive/GitHub: right-click → Properties → **Unblock** → OK, then Extract All).
 2. Start → type *PowerShell* → right-click → **Run as administrator**.
-3. Run:
+3. Run (change `-SqlServer` if SSMS's connect window shows something other than `.` / `(local)`, e.g. `".\SQLEXPRESS"`):
    ```powershell
    cd $HOME\Desktop\agent
-   powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -IngestUrl https://gkehjkttaowtjabofpsq.supabase.co/functions/v1/erp-ingest
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -IngestUrl https://gkehjkttaowtjabofpsq.supabase.co/functions/v1/erp-ingest -SqlServer "." -SqlDatabase "Spark"
    ```
-4. It asks for the `inventory_sync` SQL password and the **sync secret** (the contents of `secrets/sync_secret.txt` — give it to whoever installs, don't email it in plain text if you can avoid it).
-5. It writes `C:\InventorySync\config.json` (readable only by Administrators, SYSTEM and you), runs a **dry run** (reads Spark Tech, writes `C:\InventorySync\out\dryrun-*.json`, sends nothing), and only if that succeeds registers the task.
-6. Within ~1 minute the dashboard's *Sync* page shows the first run.
+4. The installer:
+   1. creates the Windows account `inventory_sync` (random password nobody needs, hidden from the sign-in screen, not an administrator);
+   2. asks for the **sync secret** (paste, Enter — nothing shows while typing) and writes `C:\InventorySync\config.json`; locks the folder so only Administrators/SYSTEM can change it and `inventory_sync` can only read it (and write logs/state/out);
+   3. writes **`create-login.sql` to the Desktop** and pauses. In SSMS: **File → Open → File… → Desktop\create-login.sql → F5** → "Commands completed successfully." Then press Enter in PowerShell. The script only creates a Windows login for `PCNAME\inventory_sync` and grants **SELECT on ITEMES, ITMUNIT, ITEMSMASTER, WAREHOUSES** — no other permissions, nothing written to Spark Tech data;
+   4. runs a **dry run as `inventory_sync`** (reads Spark Tech, writes `C:\InventorySync\out\dryrun-*.json`, sends nothing) and shows the log;
+   5. only if that succeeds, registers the task `InventorySync` (every 5 minutes, as `inventory_sync`).
+5. Within ~5 minutes the app's *Sync* page shows the first full run.
+
+Running the installer again is safe (it renews the account's password and the task). Use `-Force` to re-enter the sync secret.
 
 **Useful commands (PowerShell):**
 ```powershell
 Start-ScheduledTask -TaskName InventorySync               # run now
 Get-ScheduledTaskInfo -TaskName InventorySync             # last result (0 = OK, 2 = skipped, already running)
 Get-Content C:\InventorySync\logs\sync-$(Get-Date -Format yyyyMMdd).log -Tail 30
-powershell -ExecutionPolicy Bypass -File C:\InventorySync\InventorySync.ps1 -DryRun   # read only, writes JSON locally
-powershell -ExecutionPolicy Bypass -File C:\InventorySync\InventorySync.ps1 -Full     # force a full snapshot
-powershell -ExecutionPolicy Bypass -File .\uninstall.ps1  # remove task + folder (-KeepLogs to keep logs)
+Remove-Item C:\InventorySync\state\meta.txt; Start-ScheduledTask -TaskName InventorySync   # force a full snapshot on the next run
+powershell -ExecutionPolicy Bypass -File .\uninstall.ps1  # remove task, folder and the inventory_sync account (-KeepLogs to keep logs)
 ```
 
-**What a run does:** below-normal priority · single instance (mutex + task setting) · TLS 1.2 · 4 SELECTs (`ITEMSMASTER` is summed per item+warehouse in SQL) · 60 s SQL timeout · compares with the last successful run and sends **only changed rows and deletions** in batches of 500 · full snapshot once every 24 h (lets the server drop rows deleted in Spark Tech) · 2-minute hard limit · retries network/5xx errors (2 s, 5 s, 10 s) · reports every run to `sync_runs` · log files kept 7 days. In a typical 5-minute window almost nothing changes, so a run is a few seconds of SQL reads and one or two small HTTPS calls.
+**What a run does:** below-normal priority · single instance (lock file + task setting) · TLS 1.2 · 4 SELECTs (`ITEMSMASTER` is summed per item+warehouse in SQL) · 60 s SQL timeout · compares with the last successful run and sends **only changed rows and deletions** in batches of 500 · full snapshot once every 24 h (lets the server drop rows deleted in Spark Tech) · 2-minute hard limit · retries network/5xx errors (2 s, 5 s, 10 s) · reports every run to `sync_runs` · log files kept 7 days. In a typical 5-minute window almost nothing changes, so a run is a few seconds of SQL reads and one or two small HTTPS calls.
 
 ## 5. Using it
 
@@ -142,7 +140,7 @@ To do on site (needs the real devices / data):
 - [ ] Create the first admin (section 1.5), log in on the PC and on an iPhone.
 - [ ] Scan 5 different real labels (Code 128 with suffixes like `010014Tr`, one EAN-13): each opens the right item.
 - [ ] Turn the phone camera permission off → manual entry still works.
-- [ ] On the store PC: create the SQL login, run `install.ps1`, confirm the dry-run JSON looks right, then the first sync appears on the *Sync* page.
+- [ ] On the store PC: run `install.ps1`, run `create-login.sql` in SSMS when it pauses, confirm the dry run succeeds, then the first sync appears on the *Sync* page.
 - [ ] **Verify the stock formula** on the *Quantity check* page for ~5 items (include one generic "ملابس منوعه" and one recently sold) against what Spark Tech shows. Adjust `qty_computed` in `erp_stock` if it differs.
 - [ ] Verify `ACTIVATE`/`ITMSTOP` meaning on one stopped item (see Decisions).
 - [ ] Ring up a sale in Spark Tech → within 5 minutes the scanned quantity drops by one.
@@ -165,7 +163,7 @@ To do on site (needs the real devices / data):
 - **ACTIVATE / ITMSTOP:** `is_active = (ACTIVATE empty or truthy) and not ITMSTOP`. Raw values are kept in `activate_raw`/`itmstop_raw` until verified on site.
 - **Sync = change detection, not full reloads:** the agent keeps the last snapshot in `C:\InventorySync\state` and sends only changes + deletions; a full snapshot every 24 h lets the server purge rows that disappeared. Safety: the purge never removes more than half a table at once, and the agent refuses to sync if ITEMES returns 0 rows.
 - **Shared secret stored as a SHA-256 hash in the database** (`private.sync_config`) so it can be rotated with one SQL statement; the Edge Function calls `erp_ingest()` with the service role, and that function is not executable by browsers.
-- **Scheduled task runs as SYSTEM** so it works when nobody is logged in; `config.json` is therefore readable by Administrators, SYSTEM and the installing user only.
+- **Agent signs in as a local Windows account `inventory_sync`, not a SQL login** (decided 2026-11-22): the store's SQL Server is in Windows Authentication mode only, and switching it to mixed mode would need a SQL Server restart. The account is a normal user (the agent refuses to run as anyone else or as an administrator), has SELECT on 4 tables only, its random password is known to nobody (only Task Scheduler stores it), and it is hidden from the sign-in screen. The task runs as that account even when nobody is logged in. `C:\InventorySync` is locked to Administrators/SYSTEM (+ read for the account), which also stops other users editing the script. A config with `"SqlAuth": "Sql"` (SQL login + password) is still supported if mixed mode is ever enabled.
 - **Dates in agent logs** use the invariant (Gregorian) calendar even on an Arabic/Hijri Windows locale.
 - `sync_runs` older than 30 days are deleted automatically.
 - Supabase security advisor shows "signed-in users can execute SECURITY DEFINER functions" for the location/role RPCs — intentional: each one checks the caller's role first. `private.sync_config` has RLS with no policies on purpose (no API access at all).

@@ -9,7 +9,8 @@
   * Sends only rows that changed since the last successful run (plus deletes);
     a full snapshot is sent once every FullSyncHours (default 24).
   * Batches of 500 rows, TLS 1.2, retries with backoff, 60 s SQL timeout,
-    2-minute total limit, below-normal priority, one instance at a time.
+    ~4-minute total limit, below-normal priority, one instance at a time. Row
+    formatting, diffing and the snapshot run in compiled C# (cached in state\).
   * Rolling log in <InstallDir>\logs (7 days).
 
 .PARAMETER DryRun
@@ -36,7 +37,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 
-$AgentVersion = '1.1.1'
+$AgentVersion = '1.2.1'
 # Windows PowerShell 5.1: $PSScriptRoot is empty inside param() defaults, so resolve here
 $Root = $PSScriptRoot
 if (-not $Root) { $Root = Split-Path -Parent $MyInvocation.MyCommand.Path }
@@ -45,7 +46,7 @@ $LogDir = Join-Path $Root 'logs'
 $StateDir = Join-Path $Root 'state'
 $OutDir = Join-Path $Root 'out'
 $Clock = [System.Diagnostics.Stopwatch]::StartNew()
-$script:Deadline = 110
+$script:Deadline = 230
 # Gregorian dates in file names/logs even on an Arabic (Hijri) Windows locale
 $InvariantCulture = [System.Globalization.CultureInfo]::InvariantCulture
 
@@ -118,45 +119,138 @@ function Assert-ReadOnlySql([string]$Sql) {
 }
 
 # ---------------------------------------------------------------------------
-# Minimal, fast JSON writer (ConvertTo-Json is slow on the Core 2 Duo)
+# Hot loops in compiled C# (PowerShell 5.1 needs ~8 ms per row on the old PC;
+# this is ~100x faster). Compiled once per agent version and cached in state\.
+# Output is identical to the original PowerShell implementation.
 # ---------------------------------------------------------------------------
-$NeedsEscape = New-Object System.Text.RegularExpressions.Regex ('["\\\x00-\x1f]', 'Compiled')
-function ConvertTo-JsonString([string]$Text) {
-    if (-not $NeedsEscape.IsMatch($Text)) { return '"' + $Text + '"' }   # fast path (almost always)
-    $sb = New-Object System.Text.StringBuilder ($Text.Length + 8)
-    [void]$sb.Append('"')
-    foreach ($ch in $Text.ToCharArray()) {
-        $c = [int]$ch
-        if ($ch -eq '"') { [void]$sb.Append('\"') }
-        elseif ($ch -eq '\') { [void]$sb.Append('\\') }
-        elseif ($c -lt 0x20) { [void]$sb.Append(('\u{0:x4}' -f $c)) }
-        else { [void]$sb.Append($ch) }
+$FastCode = @'
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Data;
+using System.Globalization;
+using System.IO;
+using System.Text;
+
+public static class InvSyncFast {
+    static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
+
+    public static string JsonString(string text) {
+        if (text == null) text = "";
+        bool plain = true;
+        foreach (char ch in text) { if (ch == '"' || ch == '\\' || ch < 0x20) { plain = false; break; } }
+        if (plain) return "\"" + text + "\"";
+        var sb = new StringBuilder(text.Length + 8);
+        sb.Append('"');
+        foreach (char ch in text) {
+            if (ch == '"') sb.Append("\\\"");
+            else if (ch == '\\') sb.Append("\\\\");
+            else if (ch < 0x20) sb.Append("\\u").Append(((int)ch).ToString("x4"));
+            else sb.Append(ch);
+        }
+        sb.Append('"');
+        return sb.ToString();
     }
-    [void]$sb.Append('"')
-    return $sb.ToString()
+
+    public static string JsonValue(object v, bool keepRaw) {
+        if (v == null || v is DBNull) return "null";
+        if (v is bool) return ((bool)v) ? "true" : "false";
+        if (v is decimal || v is double || v is float || v is int || v is long || v is short || v is byte)
+            return Convert.ToString(v, Inv);
+        if (v is DateTime) return JsonString(((DateTime)v).ToString("s", Inv));
+        if (v is byte[]) return "null";
+        string text = Convert.ToString(v, Inv);
+        if (!keepRaw) text = text.TrimEnd();   // CHAR padding
+        return JsonString(text);
+    }
+
+    public static string KeyString(object[] values) {
+        var parts = new string[values.Length];
+        for (int i = 0; i < values.Length; i++) {
+            object v = values[i];
+            parts[i] = (v == null || v is DBNull) ? "" : Convert.ToString(v, Inv).Trim();
+        }
+        return string.Join("|", parts);
+    }
+
+    public static string FormatRow(string[] columns, object[] values, bool[] keepRaw) {
+        var sb = new StringBuilder(256);
+        sb.Append('{');
+        for (int i = 0; i < columns.Length; i++) {
+            if (i > 0) sb.Append(',');
+            sb.Append('"').Append(columns[i]).Append("\":").Append(JsonValue(values[i], keepRaw[i]));
+        }
+        sb.Append('}');
+        return sb.ToString();
+    }
+
+    public static Dictionary<string, string> ReadTable(IDataReader reader, string[] columns, int[] keyIdx, bool[] keepRaw) {
+        var rows = new Dictionary<string, string>();
+        var values = new object[columns.Length];
+        var keyVals = new object[keyIdx.Length];
+        while (reader.Read()) {
+            reader.GetValues(values);
+            for (int j = 0; j < keyIdx.Length; j++) keyVals[j] = values[keyIdx[j]];
+            rows[KeyString(keyVals)] = FormatRow(columns, values, keepRaw);
+        }
+        return rows;
+    }
+
+    // rows that are new or changed (or all of them on a full sync)
+    public static List<string> Upserts(Dictionary<string, string> current, Dictionary<string, string> old, bool full) {
+        var list = new List<string>();
+        foreach (var kv in current) {
+            string prev;
+            if (full || !old.TryGetValue(kv.Key, out prev) || prev != kv.Value) list.Add(kv.Value);
+        }
+        return list;
+    }
+
+    public static List<string> DeletedKeys(Dictionary<string, string> current, Dictionary<string, string> old) {
+        var list = new List<string>();
+        foreach (var k in old.Keys) if (!current.ContainsKey(k)) list.Add(k);
+        return list;
+    }
+
+    // table name -> (key -> row JSON)
+    public static Dictionary<string, Dictionary<string, string>> LoadSnapshot(string path) {
+        var tables = new Dictionary<string, Dictionary<string, string>>();
+        foreach (string line in File.ReadAllLines(path, Encoding.UTF8)) {
+            string[] parts = line.Split(new[] { '\t' }, 3);
+            if (parts.Length != 3) continue;
+            Dictionary<string, string> rows;
+            if (!tables.TryGetValue(parts[0], out rows)) { rows = new Dictionary<string, string>(); tables[parts[0]] = rows; }
+            rows[parts[1]] = parts[2];
+        }
+        return tables;
+    }
+
+    public static void WriteSnapshot(TextWriter w, string table, Dictionary<string, string> rows) {
+        foreach (var kv in rows) { w.Write(table); w.Write('\t'); w.Write(kv.Key); w.Write('\t'); w.WriteLine(kv.Value); }
+    }
+}
+'@
+
+function Import-FastCode {
+    if ('InvSyncFast' -as [type]) { return }
+    $refs = @{}
+    if ($PSVersionTable.PSEdition -ne 'Core') { $refs.ReferencedAssemblies = @('System.Data') }
+    $dll = Join-Path $StateDir ("InvSyncFast-{0}.dll" -f $AgentVersion)
+    if (Test-Path $dll) { try { Add-Type -Path $dll; return } catch { Write-Log 'WARN' "Cached helper not loadable, recompiling: $($_.Exception.Message)" } }
+    try {
+        Add-Type -TypeDefinition $FastCode -OutputAssembly $dll -OutputType Library @refs
+        if (-not ('InvSyncFast' -as [type])) { Add-Type -Path $dll }
+    } catch {
+        Write-Log 'WARN' "Could not cache the compiled helper ($($_.Exception.Message)); compiling in memory."
+        if (-not ('InvSyncFast' -as [type])) { Add-Type -TypeDefinition $FastCode @refs }
+    }
 }
 
+function ConvertTo-JsonString([string]$Text) { return [InvSyncFast]::JsonString($Text) }
 $Invariant = [System.Globalization.CultureInfo]::InvariantCulture
-function ConvertTo-JsonValue($Value, [string]$Column) {
-    if ($null -eq $Value -or $Value -is [System.DBNull]) { return 'null' }
-    if ($Value -is [bool]) { if ($Value) { return 'true' } else { return 'false' } }
-    if ($Value -is [decimal] -or $Value -is [double] -or $Value -is [single] -or $Value -is [int] -or
-        $Value -is [long] -or $Value -is [int16] -or $Value -is [byte]) {
-        return ([System.Convert]::ToString($Value, $Invariant))
-    }
-    if ($Value -is [datetime]) { return (ConvertTo-JsonString ($Value.ToString('s', $Invariant))) }
-    if ($Value -is [byte[]]) { return 'null' }
-    $text = [string]$Value
-    if ($KeepRawColumns -notcontains $Column) { $text = $text.TrimEnd() }  # CHAR padding
-    return (ConvertTo-JsonString $text)
-}
-
-function Get-KeyString($Values) {
-    $parts = foreach ($v in $Values) {
-        if ($null -eq $v -or $v -is [System.DBNull]) { '' } else { ([System.Convert]::ToString($v, $Invariant)).Trim() }
-    }
-    return ($parts -join '|')
-}
+function Get-KeyString($Values) { return [InvSyncFast]::KeyString([object[]]@($Values)) }
+function Get-KeepRaw($Columns) { return [bool[]]@(foreach ($c in $Columns) { $KeepRawColumns -contains $c }) }
+function Format-Row($Columns, $Values) { return [InvSyncFast]::FormatRow([string[]]@($Columns), [object[]]@($Values), (Get-KeepRaw $Columns)) }
 
 # ---------------------------------------------------------------------------
 # Readers. Each returns Dictionary[key -> row JSON] for one table.
@@ -175,31 +269,12 @@ function Read-SqlTable($Connection, [string]$Name, $Def, [int]$TimeoutSeconds) {
     $cmd = $Connection.CreateCommand()
     $cmd.CommandText = $sql
     $cmd.CommandTimeout = $TimeoutSeconds
-    $rows = New-Object 'System.Collections.Generic.Dictionary[string,string]'
+    $keyIdx = [int[]]@(foreach ($k in $Def.Key) { [array]::IndexOf($Def.Columns, $k) })
     $reader = $cmd.ExecuteReader([System.Data.CommandBehavior]::SequentialAccess)
     try {
-        $n = $Def.Columns.Count
-        $keyIdx = @(foreach ($k in $Def.Key) { [array]::IndexOf($Def.Columns, $k) })
-        $values = New-Object object[] $n
-        $keyVals = New-Object object[] $keyIdx.Count
-        while ($reader.Read()) {
-            [void]$reader.GetValues($values)
-            for ($j = 0; $j -lt $keyIdx.Count; $j++) { $keyVals[$j] = $values[$keyIdx[$j]] }
-            $rows[(Get-KeyString $keyVals)] = (Format-Row $Def.Columns $values)
-        }
+        $rows = [InvSyncFast]::ReadTable($reader, [string[]]@($Def.Columns), $keyIdx, (Get-KeepRaw $Def.Columns))
     } finally { $reader.Close(); $cmd.Dispose() }
     return , $rows
-}
-
-function Format-Row($Columns, $Values) {
-    $sb = New-Object System.Text.StringBuilder 256
-    [void]$sb.Append('{')
-    for ($i = 0; $i -lt $Columns.Count; $i++) {
-        if ($i -gt 0) { [void]$sb.Append(',') }
-        [void]$sb.Append('"').Append($Columns[$i]).Append('":').Append((ConvertTo-JsonValue $Values[$i] $Columns[$i]))
-    }
-    [void]$sb.Append('}')
-    return $sb.ToString()
 }
 
 function Read-FixtureTable($Fixture, [string]$Name, $Def) {
@@ -240,10 +315,8 @@ function Read-State {
         if ([datetime]::TryParse($txt, $Invariant, [System.Globalization.DateTimeStyles]::RoundtripKind, [ref]$parsed)) { $state.LastFullUtc = $parsed }
     }
     if (Test-Path $file) {
-        foreach ($line in [System.IO.File]::ReadAllLines($file, [System.Text.Encoding]::UTF8)) {
-            $parts = $line.Split("`t", 3)
-            if ($parts.Count -eq 3 -and $state.Tables.ContainsKey($parts[0])) { $state.Tables[$parts[0]][$parts[1]] = $parts[2] }
-        }
+        $loaded = [InvSyncFast]::LoadSnapshot($file)
+        foreach ($t in $Tables.Keys) { if ($loaded.ContainsKey($t)) { $state.Tables[$t] = $loaded[$t] } }
     }
     return $state
 }
@@ -253,9 +326,7 @@ function Save-State($Current, [datetime]$LastFullUtc) {
     $tmp = "$file.tmp"
     $w = New-Object System.IO.StreamWriter($tmp, $false, (New-Object System.Text.UTF8Encoding($false)))
     try {
-        foreach ($t in $Current.Keys) {
-            foreach ($kv in $Current[$t].GetEnumerator()) { $w.Write($t); $w.Write("`t"); $w.Write($kv.Key); $w.Write("`t"); $w.WriteLine($kv.Value) }
-        }
+        foreach ($t in $Current.Keys) { [InvSyncFast]::WriteSnapshot($w, $t, $Current[$t]) }
     } finally { $w.Close() }
     if (Test-Path $file) { Remove-Item $file -Force }
     Move-Item $tmp $file
@@ -339,13 +410,15 @@ try {
     $batchSize = 500; if ($config.PSObject.Properties['BatchSize']) { $batchSize = [int]$config.BatchSize }
     $fullHours = 24;  if ($config.PSObject.Properties['FullSyncHours']) { $fullHours = [int]$config.FullSyncHours }
     $sqlTimeout = 60; if ($config.PSObject.Properties['SqlTimeoutSeconds']) { $sqlTimeout = [int]$config.SqlTimeoutSeconds }
-    if ($config.PSObject.Properties['MaxRunSeconds']) { $script:Deadline = [int]$config.MaxRunSeconds }
+    # never below 230 s: the first full read + upload on the old PC needs it (older configs said 110)
+    if ($config.PSObject.Properties['MaxRunSeconds']) { $script:Deadline = [Math]::Max(230, [int]$config.MaxRunSeconds) }
     if (-not $DryRun) {
         if (-not $config.IngestUrl -or $config.IngestUrl -notmatch '^https://') { throw 'IngestUrl must be an https:// URL' }
         if (-not $config.SyncSecret -or $config.SyncSecret.Length -lt 16) { throw 'SyncSecret missing or too short' }
     }
 
     Write-Log 'INFO' ("InventorySync {0} start (dryRun={1}, source={2})" -f $AgentVersion, [bool]$DryRun, $(if ($SourceJson) { 'fixture' } else { 'sql' }))
+    Import-FastCode
 
     # ---- read ----
     $current = [ordered]@{}
@@ -398,14 +471,10 @@ try {
     $changes = [ordered]@{}
     foreach ($t in $Tables.Keys) {
         $old = $state.Tables[$t]
-        $upserts = New-Object System.Collections.Generic.List[string]
+        $upserts = [InvSyncFast]::Upserts($current[$t], $old, $isFull)
         $deletes = New-Object System.Collections.Generic.List[string]
-        foreach ($kv in $current[$t].GetEnumerator()) {
-            $prev = $null
-            if ($isFull -or -not $old.TryGetValue($kv.Key, [ref]$prev) -or $prev -ne $kv.Value) { $upserts.Add($kv.Value) }
-        }
         if (-not $isFull) {
-            foreach ($k in $old.Keys) { if (-not $current[$t].ContainsKey($k)) { $deletes.Add((Get-KeyJson $Tables[$t] $k)) } }
+            foreach ($k in [InvSyncFast]::DeletedKeys($current[$t], $old)) { $deletes.Add((Get-KeyJson $Tables[$t] $k)) }
         }
         $changes[$t] = @{ Upserts = $upserts; Deletes = $deletes }
     }

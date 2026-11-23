@@ -13,7 +13,7 @@
     (read-only access to 4 Spark Tech tables for that Windows account).
   * Runs a DRY RUN as inventory_sync (reads Spark Tech, writes a local JSON file, sends nothing).
   * Registers the scheduled task "InventorySync" as inventory_sync: every 5 minutes,
-    below-normal priority, 2-minute limit, never two at once, runs with nobody logged in.
+    below-normal priority, 4-minute limit, never two at once, runs with nobody logged in.
   Nothing here touches SQL Server settings, Spark Tech, the printer or other PC settings.
   Run it again any time (e.g. with -Force to re-enter the sync secret); it is safe to repeat.
 
@@ -165,24 +165,23 @@ foreach ($d in @($InstallDir, "$InstallDir\logs", "$InstallDir\state", "$Install
 Copy-Item -Path (Join-Path $PSScriptRoot 'InventorySync.ps1') -Destination "$InstallDir\InventorySync.ps1" -Force
 
 $configPath = "$InstallDir\config.json"
-$writeConfig = $true
-if ((Test-Path $configPath) -and -not $Force) {
+$syncSecret = $null
+if ((Test-Path $configPath) -and -not $Force -and -not $SecretFile) {
     $old = [IO.File]::ReadAllText($configPath) | ConvertFrom-Json
-    if ($old.PSObject.Properties['SqlAuth'] -and $old.SqlAuth -eq 'Windows' -and $old.SqlServer -eq $SqlServer -and $old.SqlDatabase -eq $SqlDatabase) {
-        Write-Host 'config.json already exists - keeping it (use -Force to re-enter the sync secret).' -ForegroundColor Yellow
-        $writeConfig = $false
+    if ($old.PSObject.Properties['SyncSecret'] -and ([string]$old.SyncSecret) -match '^[0-9a-fA-F]{64}$') {
+        $syncSecret = [string]$old.SyncSecret
+        Write-Host 'Keeping the sync secret from the existing config.json (use -Force to enter it again).' -ForegroundColor Yellow
     }
 }
-if ($writeConfig) {
-    $syncSecret = Read-SyncSecret
-    $config = [ordered]@{
-        SqlServer = $SqlServer; SqlDatabase = $SqlDatabase; SqlAuth = 'Windows'; SqlUser = $AccountName
-        IngestUrl = $IngestUrl; SyncSecret = $syncSecret
-        BatchSize = 500; FullSyncHours = 24; SqlTimeoutSeconds = 60; MaxRunSeconds = 110
-    }
-    [IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
-    Write-Host 'config.json written.'
+if (-not $syncSecret) { $syncSecret = Read-SyncSecret }
+# always rewrite the rest so new defaults (e.g. time limits) apply
+$config = [ordered]@{
+    SqlServer = $SqlServer; SqlDatabase = $SqlDatabase; SqlAuth = 'Windows'; SqlUser = $AccountName
+    IngestUrl = $IngestUrl; SyncSecret = $syncSecret
+    BatchSize = 500; FullSyncHours = 24; SqlTimeoutSeconds = 90; MaxRunSeconds = 230
 }
+[IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
+Write-Host 'config.json written.'
 
 # Folder: only Administrators/SYSTEM can change anything; inventory_sync reads,
 # and may write only logs/state/out. (Also stops other users editing the script.)
@@ -245,7 +244,7 @@ function Register-AgentTask([string]$Name, [string]$ExtraArgs, $Trigger, [string
     } else {
         $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $psArgs -WorkingDirectory $InstallDir
     }
-    $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 2) `
+    $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 4) `
         -Priority 7 -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -DontStopOnIdleEnd
     $p = @{ TaskName = $Name; Action = $action; Settings = $settings; User = "$Computer\$AccountName"; Password = $password; RunLevel = 'Limited'; Description = $Description }
     if ($Trigger) { $p.Trigger = $Trigger }
@@ -275,7 +274,7 @@ if (-not $SkipDryRun) {
         $result = (Get-ScheduledTaskInfo -TaskName $DryTaskName).LastTaskResult
         $finished = ($state -ne 'Running' -and $state -ne 'Queued' -and $result -ne $notRun)
         $neverStarted = ($result -eq $notRun -and $state -ne 'Running' -and ((Get-Date) - $started).TotalSeconds -gt 30)
-    } while (-not $finished -and -not $neverStarted -and ((Get-Date) - $started).TotalMinutes -lt 3)
+    } while (-not $finished -and -not $neverStarted -and ((Get-Date) - $started).TotalMinutes -lt 5)
     Write-Host ''
     Unregister-ScheduledTask -TaskName $DryTaskName -Confirm:$false
     Show-LogTail
@@ -288,6 +287,7 @@ if (-not $SkipDryRun) {
     Remove-Item $consoleFile -Force -ErrorAction SilentlyContinue
     if ($result -ne 0) {
         $hint = ''
+        if ($result -eq 267014) { $hint = ' (stopped by the time limit)' }
         if ($result -eq $notRun) { $hint = ' (Windows did not start the task - check that no policy blocks "Log on as a batch job" for inventory_sync)' }
         throw "Dry run failed, result $result$hint. See the log lines above / $InstallDir\logs. The scheduled task was NOT created. If it says 'Login failed', run create-login.sql in SSMS again, then run this installer again."
     }

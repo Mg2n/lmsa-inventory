@@ -115,7 +115,7 @@ Remove-Item C:\InventorySync\state\meta.txt; Start-ScheduledTask -TaskName Inven
 powershell -ExecutionPolicy Bypass -File .\uninstall.ps1  # remove task, folder and the inventory_sync account (-KeepLogs to keep logs)
 ```
 
-**What a run does:** below-normal priority · single instance (lock file + task setting) · TLS 1.2 · 4 SELECTs (`ITEMSMASTER` is summed per item+warehouse in SQL) · 60 s SQL timeout · compares with the last successful run and sends **only changed rows and deletions** in batches of 500 · full snapshot once every 24 h (lets the server drop rows deleted in Spark Tech) · 2-minute hard limit · retries network/5xx errors (2 s, 5 s, 10 s) · reports every run to `sync_runs` · log files kept 7 days. In a typical 5-minute window almost nothing changes, so a run is a few seconds of SQL reads and one or two small HTTPS calls.
+**What a run does:** below-normal priority · single instance (lock file + task setting) · TLS 1.2 · 4 SELECTs (`ITEMSMASTER` is summed per item+warehouse in SQL) · 90 s SQL timeout · compares with the last successful run and sends **only changed rows and deletions** in batches of 500 · full snapshot once every 24 h (lets the server drop rows deleted in Spark Tech) · 4-minute hard limit (the very first full run on the store PC reads ~13,600 rows) · retries network/5xx errors (2 s, 5 s, 10 s) · reports every run to `sync_runs` · log files kept 7 days. In a typical 5-minute window almost nothing changes, so a run is a few seconds of SQL reads and one or two small HTTPS calls.
 
 ## 5. Using it
 

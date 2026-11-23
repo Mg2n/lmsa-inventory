@@ -27,7 +27,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$ConfigPath = (Join-Path $PSScriptRoot 'config.json'),
+    [string]$ConfigPath,
     [switch]$DryRun,
     [switch]$Full,
     [string]$SourceJson
@@ -36,8 +36,11 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 
-$AgentVersion = '1.1.0'
+$AgentVersion = '1.1.1'
+# Windows PowerShell 5.1: $PSScriptRoot is empty inside param() defaults, so resolve here
 $Root = $PSScriptRoot
+if (-not $Root) { $Root = Split-Path -Parent $MyInvocation.MyCommand.Path }
+if (-not $ConfigPath) { $ConfigPath = Join-Path $Root 'config.json' }
 $LogDir = Join-Path $Root 'logs'
 $StateDir = Join-Path $Root 'state'
 $OutDir = Join-Path $Root 'out'
@@ -288,7 +291,9 @@ function Invoke-Ingest($Config, [string]$Json) {
             $text = $sr.ReadToEnd(); $sr.Close(); $resp.Close()
             return ($text | ConvertFrom-Json)
         } catch [System.Net.WebException] {
+            # PowerShell may wrap it in a MethodInvocationException: unwrap to the WebException
             $ex = $_.Exception
+            while ($ex -isnot [System.Net.WebException] -and $ex.InnerException) { $ex = $ex.InnerException }
             $status = 0; $body = ''
             if ($ex.Response) {
                 $status = [int]$ex.Response.StatusCode

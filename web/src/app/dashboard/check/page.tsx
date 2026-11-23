@@ -25,6 +25,8 @@ export default function CheckPage() {
   const [rows, setRows] = useState<StockRow[]>([]);
   const [spark, setSpark] = useState("");
   const [notFound, setNotFound] = useState(false);
+  // warehouses whose stock counts in the app (empty list = all count)
+  const [counted, setCounted] = useState<string[] | null>(null);
 
   async function load(code: string) {
     setSpark("");
@@ -39,11 +41,16 @@ export default function CheckPage() {
     setNotFound(false);
     const p = r.products[0];
     setProduct(p);
-    const s = await supabase.from("erp_stock").select("*").eq("itmcode", p.itmcode).order("whsno").order("batchno");
+    const [s, w] = await Promise.all([
+      supabase.from("erp_stock").select("*").eq("itmcode", p.itmcode).order("whsno").order("batchno"),
+      supabase.from("stock_warehouses").select("brnid,whsno"),
+    ]);
     setRows((s.data as StockRow[]) ?? []);
+    setCounted(((w.data as { brnid: string; whsno: string }[]) ?? []).map((x) => `${x.brnid}|${x.whsno}`));
   }
 
-  const total = rows.reduce((a, r) => a + Number(r.qty_computed), 0);
+  const counts = (r: StockRow) => !counted || counted.length === 0 || counted.includes(`${r.brnid}|${r.whsno}`);
+  const total = rows.filter(counts).reduce((a, r) => a + Number(r.qty_computed), 0);
   const diff = spark.trim() === "" ? null : Number(spark) - total;
 
   return (
@@ -53,7 +60,7 @@ export default function CheckPage() {
         <p className="ltr text-start text-sm text-muted">
           qty = BEGINQTY + PURCHQTY − SALEQTY − PURCHRTN + SALERTN + INQTY − OUTQTY &nbsp;(RESERVQTY shown separately)
         </p>
-        <p className="text-sm text-muted">القيم هي مجموع صفوف ITEMSMASTER لكل مستودع. افتح نفس الصنف في سبارك تك، واكتب الكمية الظاهرة هناك للمقارنة. جرّب عدة أصناف قبل الاعتماد على الرقم.</p>
+        <p className="text-sm text-muted">القيم هي مجموع صفوف ITEMSMASTER لكل مستودع، والمحسوبة تجمع مستودع المحل فقط (الصفوف الباهتة لا تُحسب). افتح نفس الصنف في سبارك تك، واكتب الكمية الظاهرة هناك للمقارنة. جرّب عدة أصناف قبل الاعتماد على الرقم.</p>
         <ScanInput onSubmit={load} placeholder="امسح أو اكتب باركود / رقم صنف" autoFocus />
       </div>
 
@@ -83,8 +90,11 @@ export default function CheckPage() {
               </thead>
               <tbody>
                 {rows.map((r) => (
-                  <tr key={`${r.whsno}-${r.batchno}`} className="border-t border-line">
-                    <td className="px-2 py-1">{r.whsno}</td>
+                  <tr key={`${r.whsno}-${r.batchno}`} className={`border-t border-line ${counts(r) ? "" : "opacity-40"}`}>
+                    <td className="px-2 py-1">
+                      {r.whsno}
+                      {counts(r) && counted && counted.length > 0 && <span className="ms-1 text-olive">✓</span>}
+                    </td>
                     <td className="px-2 py-1">{r.batchno || "—"}</td>
                     {COLS.map(([k]) => (
                       <td key={k} className={`px-2 py-1 text-right ${Number(r[k]) ? "font-semibold" : "text-muted"}`}>

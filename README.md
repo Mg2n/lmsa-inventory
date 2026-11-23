@@ -168,6 +168,8 @@ To do on site (needs the real devices / data):
 - `sync_runs` older than 30 days are deleted automatically.
 - Supabase security advisor shows "signed-in users can execute SECURITY DEFINER functions" for the location/role RPCs — intentional: each one checks the caller's role first. `private.sync_config` has RLS with no policies on purpose (no API access at all).
 
+- **Quantities count only the store's warehouse** (decided 2026-11-24): Spark Tech's `ITEMSMASTER` holds every item in 6 warehouses (WHSNO 1–6); the store is warehouse **3 "فرع عريجا"** — confirmed by the owner (item 001 = 16 in Spark Tech, not 48 for all six). All warehouses are still synced; `public.stock_warehouses` lists which ones count (empty = all), and `v_store_stock` feeds the totals. To change it: `insert into public.stock_warehouses (brnid, whsno, note) values ('1','4','…');` (admin).
+
 ## TODO (skipped in v1)
 
 - [ ] Copy new ITMSALES lines into `erp_sales` (table exists; need the real line-serial column from Spark Tech, then add a `sales` table to the agent with a "since last key" query).

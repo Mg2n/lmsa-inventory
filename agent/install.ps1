@@ -233,11 +233,15 @@ Write-Host 'Wait for "Commands completed successfully."'
 [void](Read-Host 'Then come back here and press Enter')
 
 # ---------------------------------------------------------------------------
-function Register-AgentTask([string]$Name, [string]$ExtraArgs, $Trigger, [string]$Description) {
+function Register-AgentTask([string]$Name, [string]$ExtraArgs, $Trigger, [string]$Description, [string]$ConsoleFile) {
     if (Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue) { Unregister-ScheduledTask -TaskName $Name -Confirm:$false }
-    $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-        -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}\InventorySync.ps1"{1}' -f $InstallDir, $ExtraArgs) `
-        -WorkingDirectory $InstallDir
+    $psArgs = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}\InventorySync.ps1"{1}' -f $InstallDir, $ExtraArgs
+    if ($ConsoleFile) {
+        # test run: keep everything PowerShell prints (even errors before the agent can log)
+        $action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument ('/c powershell.exe {0} > "{1}" 2>&1' -f $psArgs, $ConsoleFile) -WorkingDirectory $InstallDir
+    } else {
+        $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $psArgs -WorkingDirectory $InstallDir
+    }
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 2) `
         -Priority 7 -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -DontStopOnIdleEnd
     $p = @{ TaskName = $Name; Action = $action; Settings = $settings; User = "$Computer\$AccountName"; Password = $password; RunLevel = 'Limited'; Description = $Description }
@@ -253,7 +257,10 @@ function Show-LogTail {
 
 if (-not $SkipDryRun) {
     Write-Step "4/6  Dry run as $AccountName (reads Spark Tech, sends nothing)"
-    Register-AgentTask $DryTaskName ' -DryRun' $null 'InventorySync test run (temporary).'
+    # C:\Users\Public is writable by every account, so this works even if C:\InventorySync is not
+    $consoleFile = Join-Path $env:PUBLIC 'InventorySync-dryrun-console.txt'
+    Remove-Item $consoleFile -Force -ErrorAction SilentlyContinue
+    Register-AgentTask $DryTaskName ' -DryRun' $null 'InventorySync test run (temporary).' $consoleFile
     Start-ScheduledTask -TaskName $DryTaskName
     # Wait until it has actually run (or clearly failed to start): up to 3 minutes.
     $started = Get-Date
@@ -269,6 +276,13 @@ if (-not $SkipDryRun) {
     Write-Host ''
     Unregister-ScheduledTask -TaskName $DryTaskName -Confirm:$false
     Show-LogTail
+    if ($result -ne 0 -and (Test-Path $consoleFile)) {
+        Write-Host '   --- what the agent printed ---' -ForegroundColor Yellow
+        Get-Content $consoleFile | Select-Object -Last 25 | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray }
+        Write-Host '   --- folder permissions ---' -ForegroundColor Yellow
+        foreach ($d in @($InstallDir, "$InstallDir\state", "$InstallDir\logs")) { & icacls.exe $d | ForEach-Object { Write-Host "   $_" -ForegroundColor Gray } }
+    }
+    Remove-Item $consoleFile -Force -ErrorAction SilentlyContinue
     if ($result -ne 0) {
         $hint = ''
         if ($result -eq $notRun) { $hint = ' (Windows did not start the task - check that no policy blocks "Log on as a batch job" for inventory_sync)' }

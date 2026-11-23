@@ -209,7 +209,9 @@ Write-Host 'Permissions set (Administrators, SYSTEM, inventory_sync read-only).'
 # ---------------------------------------------------------------------------
 Write-Step '3/6  Read-only access in SQL Server (you do this in SSMS)'
 $login = "$Computer\$AccountName"
-$grants = ($Tables | ForEach-Object { "GRANT SELECT ON dbo.$_ TO [$AccountName];" }) -join "`r`n"
+# The database user is named after the Windows login and found by SID, so an older
+# user called 'inventory_sync' (e.g. from a SQL login) can never be picked up by mistake.
+$grants = ($Tables | ForEach-Object { "GRANT SELECT ON dbo.$_ TO [$login];" }) -join "`r`n"
 $sql = @"
 -- InventorySync: read-only access for the Windows account $login
 -- Creates a login and gives SELECT on $($Tables.Count) tables only. Changes no data.
@@ -218,13 +220,14 @@ IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'$login')
     CREATE LOGIN [$login] FROM WINDOWS WITH DEFAULT_DATABASE = [$SqlDatabase];
 GO
 USE [$SqlDatabase];
-IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N'$AccountName')
-    CREATE USER [$AccountName] FOR LOGIN [$login];
+IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE sid = SUSER_SID(N'$login'))
+    CREATE USER [$login] FOR LOGIN [$login];
 $grants
 GO
 "@
 # on the Desktop: SSMS (not elevated) cannot open files inside the locked-down folder
 $sqlFile = Join-Path ([Environment]::GetFolderPath('Desktop')) 'create-login.sql'
+$sql = $sql -replace "`r?`n", "`r`n"   # consistent Windows line endings (no SSMS prompt)
 [IO.File]::WriteAllText($sqlFile, $sql, (New-Object Text.UTF8Encoding($true)))
 Write-Host $sql -ForegroundColor Gray
 Write-Host "Saved as $sqlFile" -ForegroundColor Yellow

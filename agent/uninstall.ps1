@@ -44,6 +44,13 @@ if (Test-Path $InstallDir) {
 if (-not $KeepAccount) {
     $machine = [ADSI]"WinNT://$Computer,computer"
     if ($machine.Children | Where-Object { $_.SchemaClassName -eq 'User' -and $_.Name -eq $AccountName }) {
+        # remove the "Log on as a batch job" right first (afterwards the SID can no longer be looked up)
+        try {
+            $sid = (New-Object Security.Principal.NTAccount("$Computer\$AccountName")).Translate([Security.Principal.SecurityIdentifier]).Value
+            . (Join-Path $PSScriptRoot 'UserRights.ps1')
+            [InvSyncUserRights]::Revoke($sid, 'SeBatchLogonRight')
+            Write-Host "'Log on as a batch job' right removed from '$AccountName'." -ForegroundColor Green
+        } catch { Write-Host "Could not remove the batch logon right: $($_.Exception.Message)" -ForegroundColor Yellow }
         $machine.Delete('User', $AccountName)
         Write-Host "Windows account '$AccountName' removed." -ForegroundColor Green
     }

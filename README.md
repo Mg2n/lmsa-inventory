@@ -97,8 +97,8 @@ store PC with admin rights (Windows Authentication, as Spark Tech's admin normal
    powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -IngestUrl https://gkehjkttaowtjabofpsq.supabase.co/functions/v1/erp-ingest -SqlServer "." -SqlDatabase "Spark"
    ```
 4. The installer:
-   1. creates the Windows account `inventory_sync` (random password nobody needs, hidden from the sign-in screen, not an administrator);
-   2. asks for the **sync secret** (paste, Enter — nothing shows while typing) and writes `C:\InventorySync\config.json`; locks the folder so only Administrators/SYSTEM can change it and `inventory_sync` can only read it (and write logs/state/out);
+   1. creates the Windows account `inventory_sync` (random password nobody needs, hidden from the sign-in screen, not an administrator) and gives that account only the **"Log on as a batch job"** right, which Windows requires to run a scheduled task as it (the store PC grants it only to Administrators by default; `uninstall.ps1` removes it);
+   2. asks for the **sync secret** (or reads it from a text file with `-SecretFile C:\path\secret.txt`, then deletes that file) (paste, Enter — nothing shows while typing) and writes `C:\InventorySync\config.json`; locks the folder so only Administrators/SYSTEM can change it and `inventory_sync` can only read it (and write logs/state/out);
    3. writes **`create-login.sql` to the Desktop** and pauses. In SSMS: **File → Open → File… → Desktop\create-login.sql → F5** → "Commands completed successfully." Then press Enter in PowerShell. The script only creates a Windows login for `PCNAME\inventory_sync` and grants **SELECT on ITEMES, ITMUNIT, ITEMSMASTER, WAREHOUSES** — no other permissions, nothing written to Spark Tech data;
    4. runs a **dry run as `inventory_sync`** (reads Spark Tech, writes `C:\InventorySync\out\dryrun-*.json`, sends nothing) and shows the log;
    5. only if that succeeds, registers the task `InventorySync` (every 5 minutes, as `inventory_sync`).

@@ -145,6 +145,12 @@ if (Test-GroupHasSid (Get-GroupAdsi $SidAdmins) $AccountSid) {
     throw "'$AccountName' is a member of Administrators. Remove it from that group first (it must be a normal user)."
 }
 
+# A scheduled task can only run as this account if it has "Log on as a batch job".
+# Grant exactly that one right to exactly this account (uninstall.ps1 removes it).
+. (Join-Path $PSScriptRoot 'UserRights.ps1')
+[InvSyncUserRights]::Grant($AccountSid.Value, 'SeBatchLogonRight')
+Write-Host "Allowed to run scheduled tasks (Log on as a batch job) - this account only."
+
 # keep it off the Windows sign-in screen so store staff never see it
 $hideKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList'
 if (-not (Test-Path $hideKey)) { New-Item -Path $hideKey -Force | Out-Null }
@@ -249,19 +255,23 @@ if (-not $SkipDryRun) {
     Write-Step "4/6  Dry run as $AccountName (reads Spark Tech, sends nothing)"
     Register-AgentTask $DryTaskName ' -DryRun' $null 'InventorySync test run (temporary).'
     Start-ScheduledTask -TaskName $DryTaskName
-    $until = (Get-Date).AddMinutes(3)
+    # Wait until it has actually run (or clearly failed to start): up to 3 minutes.
+    $started = Get-Date
+    $notRun = 267011   # "task has not yet run"
     do {
         Start-Sleep -Seconds 3
-        $state = [string](Get-ScheduledTask -TaskName $DryTaskName).State
         Write-Host -NoNewline '.'
-    } while (($state -eq 'Running' -or $state -eq 'Queued') -and (Get-Date) -lt $until)
+        $state = [string](Get-ScheduledTask -TaskName $DryTaskName).State
+        $result = (Get-ScheduledTaskInfo -TaskName $DryTaskName).LastTaskResult
+        $finished = ($state -ne 'Running' -and $state -ne 'Queued' -and $result -ne $notRun)
+        $neverStarted = ($result -eq $notRun -and $state -ne 'Running' -and ((Get-Date) - $started).TotalSeconds -gt 30)
+    } while (-not $finished -and -not $neverStarted -and ((Get-Date) - $started).TotalMinutes -lt 3)
     Write-Host ''
-    $result = (Get-ScheduledTaskInfo -TaskName $DryTaskName).LastTaskResult
     Unregister-ScheduledTask -TaskName $DryTaskName -Confirm:$false
     Show-LogTail
     if ($result -ne 0) {
         $hint = ''
-        if ($result -eq 267011) { $hint = ' (the task did not start)' }
+        if ($result -eq $notRun) { $hint = ' (Windows did not start the task - check that no policy blocks "Log on as a batch job" for inventory_sync)' }
         throw "Dry run failed, result $result$hint. See the log lines above / $InstallDir\logs. The scheduled task was NOT created. If it says 'Login failed', run create-login.sql in SSMS again, then run this installer again."
     }
     Write-Host 'Dry run OK - Spark Tech was read successfully.' -ForegroundColor Green

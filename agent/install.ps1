@@ -26,6 +26,7 @@ param(
     [string]$InstallDir = 'C:\InventorySync',
     [string]$SqlServer = '.',
     [string]$SqlDatabase = 'Spark',
+    [string]$SecretFile,
     [switch]$SkipDryRun,
     [switch]$Force
 )
@@ -77,6 +78,34 @@ function Get-GroupAdsi([Security.Principal.SecurityIdentifier]$Sid) {
     return [ADSI]"WinNT://$Computer/$name,group"
 }
 
+# Membership by SID (ADSI IsMember() compares path strings and can miss a real member)
+function Test-GroupHasSid($Group, [Security.Principal.SecurityIdentifier]$Sid) {
+    foreach ($m in @($Group.Invoke('Members'))) {
+        try {
+            $bytes = $m.GetType().InvokeMember('objectSid', 'GetProperty', $null, $m, $null)
+            if ((New-Object Security.Principal.SecurityIdentifier($bytes, 0)).Equals($Sid)) { return $true }
+        } catch { }
+    }
+    return $false
+}
+
+function Read-SyncSecret {
+    if ($SecretFile) {
+        if (-not (Test-Path $SecretFile)) { throw "Secret file not found: $SecretFile" }
+        $value = ([IO.File]::ReadAllText((Resolve-Path $SecretFile))).Trim()
+        if ($value -notmatch '^[0-9a-fA-F]{64}$') { throw "The secret file must contain exactly the 64-character secret (it has $($value.Length) characters)." }
+        Remove-Item $SecretFile -Force
+        Write-Host "Secret read from the file (64 characters) and the file was deleted." -ForegroundColor Green
+        return $value
+    }
+    for ($try = 1; $try -le 3; $try++) {
+        $value = (Read-Secret 'Paste the sync secret (right-click to paste, nothing shows) and press Enter').Trim()
+        if ($value -match '^[0-9a-fA-F]{64}$') { Write-Host 'Secret received (64 characters).' -ForegroundColor Green; return $value }
+        Write-Host ("Received {0} characters - the secret is 64 characters (0-9, a-f). Copy it again and retry." -f $value.Length) -ForegroundColor Yellow
+    }
+    throw 'Could not read the sync secret. Save it in a text file (e.g. C:\secret.txt) and run the installer again with -SecretFile C:\secret.txt'
+}
+
 function New-Rule($Identity, [string]$Rights, [bool]$Inherit) {
     $inh = [Security.AccessControl.InheritanceFlags]::None
     if ($Inherit) { $inh = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit' }
@@ -106,13 +135,15 @@ $flags = ($flags -band (-bnot 0x2)) -bor 0x10000 -bor 0x40   # enabled, password
 $user.Put('UserFlags', $flags)
 $user.SetInfo()
 
-$memberPath = "WinNT://$Computer/$AccountName"
+$AccountSid = (New-Object Security.Principal.NTAccount("$Computer\$AccountName")).Translate([Security.Principal.SecurityIdentifier])
 $usersGroup = Get-GroupAdsi $SidUsers
-if (-not $usersGroup.IsMember($memberPath)) { $usersGroup.Add($memberPath) }
-if ((Get-GroupAdsi $SidAdmins).IsMember($memberPath)) {
+if (-not (Test-GroupHasSid $usersGroup $AccountSid)) {
+    try { $usersGroup.Add("WinNT://$Computer/$AccountName") }
+    catch { if ($_.Exception.Message -notmatch 'already a member') { throw } }
+}
+if (Test-GroupHasSid (Get-GroupAdsi $SidAdmins) $AccountSid) {
     throw "'$AccountName' is a member of Administrators. Remove it from that group first (it must be a normal user)."
 }
-$AccountSid = (New-Object Security.Principal.NTAccount("$Computer\$AccountName")).Translate([Security.Principal.SecurityIdentifier])
 
 # keep it off the Windows sign-in screen so store staff never see it
 $hideKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\SpecialAccounts\UserList'
@@ -137,8 +168,7 @@ if ((Test-Path $configPath) -and -not $Force) {
     }
 }
 if ($writeConfig) {
-    $syncSecret = (Read-Secret 'Paste the sync secret (from the project owner) and press Enter').Trim()
-    if ($syncSecret.Length -lt 16) { throw 'Sync secret looks too short.' }
+    $syncSecret = Read-SyncSecret
     $config = [ordered]@{
         SqlServer = $SqlServer; SqlDatabase = $SqlDatabase; SqlAuth = 'Windows'; SqlUser = $AccountName
         IngestUrl = $IngestUrl; SyncSecret = $syncSecret

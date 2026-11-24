@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { CheckCircle2, ChevronLeft, ChevronRight, Clock, Package, Receipt, RotateCcw, TrendingUp, Undo2 } from "lucide-react";
 import { RequireStaff } from "@/components/AuthProvider";
 import { Toast, useToast } from "@/components/ui";
 import { errorText, supabase } from "@/lib/supabase";
@@ -17,6 +18,9 @@ interface DayBranch {
   return_bills: number;
   qty: number;
   discount: number;
+  cost: number | null;
+  profit: number | null;
+  revenue_ex_tax: number | null;
   cancelled: number;
   first_at: string | null;
   last_at: string | null;
@@ -81,12 +85,12 @@ function Daily() {
     <div className="space-y-4">
       <Toast message={toast.message} tone={toast.tone} />
       <div className="card flex flex-wrap items-center gap-3">
-        <button className="btn-soft" onClick={() => setDay(addDays(day, -1))} aria-label="اليوم السابق">
-          → السابق
+        <button className="btn-soft px-3" onClick={() => setDay(addDays(day, -1))} aria-label="اليوم السابق">
+          <ChevronRight size={18} /> السابق
         </button>
         <input type="date" className="input ltr w-auto" value={day} max={today} onChange={(e) => e.target.value && setDay(e.target.value)} />
         <button className="btn-soft" disabled={day >= today} onClick={() => setDay(addDays(day, 1))} aria-label="اليوم التالي">
-          التالي ←
+          التالي <ChevronLeft size={18} />
         </button>
         {day !== today && (
           <button className="btn-soft" onClick={() => setDay(today)}>
@@ -115,10 +119,14 @@ function Daily() {
                   <span className="ltr">{fmtTime(r.last_at)}</span>
                 </div>
               </div>
-              {r.review ? <span className="chip bg-olive-soft text-olive">✓ تمت المراجعة</span> : <span className="chip bg-amber-soft text-amber">بانتظار المراجعة</span>}
+              {r.review ? (
+                <span className="chip bg-olive-soft/90 text-olive"><CheckCircle2 size={14} /> تمت المراجعة</span>
+              ) : (
+                <span className="chip bg-amber-soft/90 text-amber"><Clock size={14} /> بانتظار المراجعة</span>
+              )}
             </div>
 
-            <div className="rounded-3xl bg-olive-soft p-4 text-center">
+            <div className="rounded-3xl bg-gradient-to-b from-olive-soft/95 to-olive-soft/60 p-4 text-center">
               <div className="text-sm text-muted">الصافي بعد المرتجعات (شامل الضريبة)</div>
               <div className="ltr text-4xl font-bold text-olive">{fmtPrice(net(r))}</div>
               <div className="mt-1 text-sm text-muted">
@@ -126,17 +134,26 @@ function Daily() {
                 {" − "}مرتجعات <b className={`ltr ${Number(r.returns_net) ? "text-danger" : "text-ink"}`}>{fmtPrice(r.returns_net)}</b>
               </div>
             </div>
+            {r.profit != null && (
+              <div className="flex items-center justify-between rounded-2xl border border-white/70 bg-white/60 px-4 py-2.5">
+                <span className="flex items-center gap-1.5 text-sm font-semibold text-clay-dark"><TrendingUp size={17} /> الربح (قبل الضريبة)</span>
+                <span className="ltr text-lg font-bold">
+                  {fmtPrice(r.profit)}
+                  {r.revenue_ex_tax ? <span className="ms-2 text-sm font-semibold text-muted">{Math.round((100 * Number(r.profit)) / Number(r.revenue_ex_tax))}%</span> : null}
+                </span>
+              </div>
+            )}
             <div className="grid grid-cols-3 gap-2 text-center text-sm">
-              <div className="rounded-2xl bg-sand p-2">
-                <div className="text-muted">فواتير</div>
+              <div className="rounded-2xl bg-white/55 p-2">
+                <div className="flex items-center justify-center gap-1 text-muted"><Receipt size={14} /> فواتير</div>
                 <div className="ltr text-xl font-bold">{fmtQty(r.sales_bills)}</div>
               </div>
-              <div className="rounded-2xl bg-sand p-2">
-                <div className="text-muted">قطع</div>
+              <div className="rounded-2xl bg-white/55 p-2">
+                <div className="flex items-center justify-center gap-1 text-muted"><Package size={14} /> قطع</div>
                 <div className="ltr text-xl font-bold">{fmtQty(r.qty)}</div>
               </div>
-              <div className={`rounded-2xl p-2 ${r.return_bills ? "bg-danger-soft" : "bg-sand"}`}>
-                <div className="text-muted">مرتجعات</div>
+              <div className={`rounded-2xl p-2 ${r.return_bills ? "bg-danger-soft/90" : "bg-white/55"}`}>
+                <div className="flex items-center justify-center gap-1 text-muted"><Undo2 size={14} /> مرتجعات</div>
                 <div className={`ltr text-xl font-bold ${r.return_bills ? "text-danger" : ""}`}>{fmtQty(r.return_bills)}</div>
               </div>
             </div>
@@ -155,15 +172,15 @@ function Daily() {
             )}
             <div className="grid grid-cols-2 gap-2">
               <Link href={`/dashboard/sales/?day=${day}&whs=${encodeURIComponent(r.whsno)}`} className="btn-soft">
-                كل فواتير اليوم
+                <Receipt size={17} /> كل فواتير اليوم
               </Link>
               {r.review ? (
                 <button className="btn-soft" onClick={() => setReviewed(r, false)}>
-                  إلغاء المراجعة
+                  <RotateCcw size={17} /> إلغاء المراجعة
                 </button>
               ) : (
                 <button className="btn-primary" onClick={() => setReviewed(r, true)}>
-                  ✓ تمت المراجعة
+                  <CheckCircle2 size={17} /> تمت المراجعة
                 </button>
               )}
             </div>

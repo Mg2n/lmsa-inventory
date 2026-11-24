@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { errorText, supabase } from "@/lib/supabase";
 import { feedback, fmtPrice, fmtQty, normCode } from "@/lib/format";
 import type { Location, Product, ProductLocation } from "@/lib/types";
+import { ArrowLeftRight, Boxes, Camera, MapPin, Pencil, Plus, Warehouse } from "lucide-react";
 import { Scanner } from "./Scanner";
 import { Sheet, useLocations } from "./ui";
 
@@ -60,15 +61,15 @@ export function ProductCard({
       </div>
 
       <div className="grid grid-cols-2 gap-3">
-        <div className={`rounded-3xl p-4 text-center ${p.negative_stock ? "bg-danger-soft" : "bg-olive-soft"}`}>
-          <div className="text-sm text-muted">الكمية في سبارك تك</div>
+        <div className={`rounded-3xl p-4 text-center ${p.negative_stock ? "bg-danger-soft/90" : "bg-olive-soft/90"}`}>
+          <div className="flex items-center justify-center gap-1 text-sm text-muted"><Warehouse size={15} /> الكمية في سبارك تك</div>
           <div className={`ltr text-6xl font-bold leading-tight ${p.negative_stock ? "text-danger" : "text-olive"}`}>
             {fmtQty(p.total_qty)}
           </div>
           {Number(p.reserved_qty) > 0 && <div className="text-sm text-muted">محجوز: {fmtQty(p.reserved_qty)}</div>}
         </div>
-        <div className={`rounded-3xl p-4 text-center ${p.mismatch ? "bg-amber-soft" : "bg-sand"}`}>
-          <div className="text-sm text-muted">في المواقع</div>
+        <div className={`rounded-3xl p-4 text-center ${p.mismatch ? "bg-amber-soft/90" : "bg-sand/80"}`}>
+          <div className="flex items-center justify-center gap-1 text-sm text-muted"><Boxes size={15} /> في المواقع</div>
           <div className={`ltr text-6xl font-bold leading-tight ${p.mismatch ? "text-amber" : "text-ink"}`}>
             {fmtQty(p.located_qty)}
           </div>
@@ -80,24 +81,24 @@ export function ProductCard({
       )}
 
       <div>
-        <h3 className="mb-2 font-semibold">أماكن التخزين</h3>
+        <h3 className="mb-2 flex items-center gap-1.5 font-semibold"><MapPin size={17} className="text-clay" /> أماكن التخزين</h3>
         {p.locations.length === 0 ? (
-          <p className="rounded-2xl bg-sand px-4 py-3 text-muted">لا يوجد موقع مسجّل لهذا الصنف بعد.</p>
+          <p className="rounded-2xl bg-sand/70 px-4 py-3 text-muted">لا يوجد موقع مسجّل لهذا الصنف بعد.</p>
         ) : (
           <ul className="space-y-2">
             {p.locations.map((l) => (
-              <li key={l.location_id} className="flex items-center gap-3 rounded-2xl border border-line bg-white px-4 py-3">
+              <li key={l.location_id} className="flex items-center gap-3 rounded-2xl border border-white/80 bg-white/75 px-4 py-3">
                 <div className="min-w-0 flex-1">
                   <div className="ltr text-start text-lg font-bold">{l.code}</div>
                   {l.description && <div className="truncate text-sm text-muted">{l.description}</div>}
                 </div>
                 <div className="ltr text-3xl font-bold text-clay">{fmtQty(l.qty)}</div>
                 <div className="flex flex-col gap-1">
-                  <button className="rounded-xl bg-sand px-3 py-1 text-sm" onClick={() => setAction({ kind: "move", from: l })}>
-                    نقل
+                  <button className="flex items-center gap-1 rounded-xl bg-sand/80 px-3 py-1 text-sm" onClick={() => setAction({ kind: "move", from: l })}>
+                    <ArrowLeftRight size={14} /> نقل
                   </button>
-                  <button className="rounded-xl bg-sand px-3 py-1 text-sm" onClick={() => setAction({ kind: "set", at: l })}>
-                    تعديل
+                  <button className="flex items-center gap-1 rounded-xl bg-sand/80 px-3 py-1 text-sm" onClick={() => setAction({ kind: "set", at: l })}>
+                    <Pencil size={14} /> تعديل
                   </button>
                 </div>
               </li>
@@ -105,7 +106,7 @@ export function ProductCard({
           </ul>
         )}
         <button className="btn-primary mt-3 w-full" onClick={() => setAction({ kind: "assign" })}>
-          ＋ إضافة إلى موقع
+          <Plus size={19} /> إضافة إلى موقع
         </button>
       </div>
 
@@ -202,7 +203,7 @@ function ActionSheet({
           ) : (
             <>
               <button type="button" className="btn-olive w-full py-3" onClick={() => setScanning(true)}>
-                📷 امسح ملصق الرف
+                <Camera size={19} /> امسح ملصق الرف
               </button>
               <LocationPicker locations={choices} value={target} onChange={setTarget} />
             </>

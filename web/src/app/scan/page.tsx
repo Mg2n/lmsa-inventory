@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from "react";
 import Link from "next/link";
+import { Camera, CircleSlash, Layers, LayoutGrid, LogOut, MapPin, ScanLine } from "lucide-react";
 import { RequireStaff, useAuth } from "@/components/AuthProvider";
 import { Scanner } from "@/components/Scanner";
 import { ProductCard } from "@/components/ProductCard";
@@ -84,20 +85,25 @@ function ScanScreen() {
   return (
     <main className="mx-auto flex min-h-dvh max-w-xl flex-col gap-4 p-4 pb-[calc(1rem+env(safe-area-inset-bottom))]">
       <Toast message={toast.message} tone={toast.tone} />
-      <header className="flex items-center justify-between gap-2">
-        <h1 className="text-xl font-bold">ماسح المخزون</h1>
-        <SyncBadge sync={sync} />
+      <header className="glass flex items-center gap-3 rounded-3xl px-4 py-3">
+        <div className="icon-tile bg-gradient-to-b from-[#cc7457] to-clay text-white shadow-[0_6px_16px_rgba(194,103,74,0.3)]">
+          <ScanLine size={20} />
+        </div>
+        <h1 className="text-lg font-bold">ماسح المخزون</h1>
+        <div className="ms-auto">
+          <SyncBadge sync={sync} />
+        </div>
       </header>
 
       <nav className="grid grid-cols-3 gap-2 text-sm">
-        <Link href="/scan/setup/" className="btn-soft py-2">
-          تجهيز الرفوف
+        <Link href="/scan/setup/" className="btn-soft flex-col gap-1 py-2.5">
+          <Layers size={19} className="text-olive" /> تجهيز الرفوف
         </Link>
-        <Link href="/dashboard/" className="btn-soft py-2">
-          لوحة التحكم
+        <Link href="/dashboard/" className="btn-soft flex-col gap-1 py-2.5">
+          <LayoutGrid size={19} className="text-clay" /> لوحة التحكم
         </Link>
-        <button onClick={signOut} className="btn-soft py-2">
-          خروج
+        <button onClick={signOut} className="btn-soft flex-col gap-1 py-2.5">
+          <LogOut size={19} className="text-muted" /> خروج
         </button>
       </nav>
 
@@ -105,7 +111,7 @@ function ScanScreen() {
         <Scanner active={cameraOn} onDetected={onDetected} className="aspect-[4/5] max-h-[55dvh] w-full" />
       ) : (
         <button className="btn-olive w-full py-4 text-lg" onClick={() => setView({ kind: "idle" })}>
-          📷 مسح التالي
+          <Camera size={22} /> مسح التالي
         </button>
       )}
 
@@ -157,8 +163,11 @@ function ScanScreen() {
 
       {view.kind === "location" && (
         <div className="card space-y-3">
-          <div className="flex items-baseline justify-between">
-            <h2 className="ltr text-2xl font-bold">{view.location.code}</h2>
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="ltr flex items-center gap-2 text-2xl font-bold">
+              <MapPin size={22} className="text-clay" />
+              {view.location.code}
+            </h2>
             <span className="text-muted">{view.location.description}</span>
           </div>
           {view.items.length === 0 ? (
@@ -178,6 +187,7 @@ function ScanScreen() {
 
       {view.kind === "notfound" && (
         <div className="card text-center">
+          <CircleSlash size={40} className="mx-auto mb-2 text-danger/80" />
           <p className="text-2xl font-bold text-danger">غير موجود في سبارك تك</p>
           <p className="ltr mt-2 text-lg">{view.code}</p>
           <p className="mt-3 text-sm text-muted">

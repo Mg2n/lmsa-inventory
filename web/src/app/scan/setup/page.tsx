@@ -2,6 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import Link from "next/link";
+import { ArrowRight, Layers } from "lucide-react";
 import { RequireStaff } from "@/components/AuthProvider";
 import { Scanner } from "@/components/Scanner";
 import { QtyStepper } from "@/components/ProductCard";
@@ -115,14 +116,17 @@ function SetupScreen() {
   return (
     <main className="mx-auto flex min-h-dvh max-w-xl flex-col gap-4 p-4">
       <Toast message={toast.message} tone={toast.tone} />
-      <header className="flex items-center justify-between">
-        <h1 className="text-xl font-bold">تجهيز الرفوف</h1>
-        <Link href="/scan/" className="btn-soft py-2 text-sm">
-          رجوع للماسح
+      <header className="glass flex items-center gap-3 rounded-3xl px-4 py-3">
+        <div className="icon-tile bg-olive-soft/90 text-olive">
+          <Layers size={20} />
+        </div>
+        <h1 className="text-lg font-bold">تجهيز الرفوف</h1>
+        <Link href="/scan/" className="btn-soft ms-auto py-2 text-sm">
+          <ArrowRight size={16} /> الماسح
         </Link>
       </header>
 
-      <div className={`rounded-3xl p-4 text-center ${shelf ? "bg-olive text-white" : "bg-amber-soft text-amber"}`}>
+      <div className={`rounded-3xl p-4 text-center shadow-[0_8px_24px_rgba(59,47,42,0.08)] ${shelf ? "bg-gradient-to-b from-[#76864f] to-olive text-white" : "glass text-amber"}`}>
         {shelf ? (
           <>
             <div className="text-sm opacity-80">الرف الحالي</div>
@@ -134,11 +138,11 @@ function SetupScreen() {
         )}
       </div>
 
-      <div className="grid grid-cols-2 gap-2 rounded-2xl bg-sand p-1 text-sm">
-        <button className={`rounded-xl py-2 font-semibold ${mode === "remaining" ? "bg-card shadow" : "text-muted"}`} onClick={() => setMode("remaining")}>
+      <div className="glass grid grid-cols-2 gap-2 rounded-2xl p-1 text-sm">
+        <button className={`rounded-xl py-2 font-semibold ${mode === "remaining" ? "bg-white/90 shadow" : "text-muted"}`} onClick={() => setMode("remaining")}>
           كل الكمية غير الموزعة
         </button>
-        <button className={`rounded-xl py-2 font-semibold ${mode === "count" ? "bg-card shadow" : "text-muted"}`} onClick={() => setMode("count")}>
+        <button className={`rounded-xl py-2 font-semibold ${mode === "count" ? "bg-white/90 shadow" : "text-muted"}`} onClick={() => setMode("count")}>
           عدّ قطعة بقطعة (+١)
         </button>
       </div>

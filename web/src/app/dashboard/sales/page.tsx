@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { Package, Receipt, ShoppingBag, TrendingUp, Undo2, Wallet, type LucideIcon } from "lucide-react";
 import { RequireStaff } from "@/components/AuthProvider";
 import { ScanInput } from "@/components/ui";
 import { errorText, supabase } from "@/lib/supabase";
@@ -16,6 +17,8 @@ interface SaleLine {
   discamt: number | null;
   taxamt: number | null;
   itmtotal: number | null;
+  cost: number | null;
+  profit: number | null;
 }
 interface Bill {
   brnid: string;
@@ -33,12 +36,23 @@ interface Bill {
   disctotal: number | null;
   taxtotal: number | null;
   invnetamt: number | null;
+  cost: number | null;
+  profit: number | null;
   is_active: boolean;
   lines: SaleLine[];
 }
 interface SalesResult {
   total: number;
-  sums: { sales_net: number; returns_net: number; sales_bills: number; return_bills: number; qty: number };
+  sums: {
+    sales_net: number;
+    returns_net: number;
+    sales_bills: number;
+    return_bills: number;
+    qty: number;
+    cost: number | null;
+    profit: number | null;
+    revenue_ex_tax: number | null;
+  };
   bills: Bill[];
 }
 
@@ -209,11 +223,20 @@ function Sales() {
 
       {/* totals */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-        <Stat label="الصافي بعد المرتجعات" value={s ? fmtPrice(Number(s.sales_net) - Number(s.returns_net)) : "—"} tone="olive" />
-        <Stat label="المبيعات (شامل الضريبة)" value={s ? fmtPrice(s.sales_net) : "—"} />
-        <Stat label="عدد فواتير البيع" value={s ? fmtQty(s.sales_bills) : "—"} />
-        <Stat label="القطع المباعة" value={s ? fmtQty(s.qty) : "—"} />
-        <Stat label="المرتجعات" value={s ? `${fmtQty(s.return_bills)} · ${fmtPrice(s.returns_net)}` : "—"} tone={s && s.return_bills ? "danger" : undefined} />
+        <Stat icon={Wallet} label="الصافي بعد المرتجعات" value={s ? fmtPrice(Number(s.sales_net) - Number(s.returns_net)) : "—"} tone="olive" />
+        {s && s.profit != null ? (
+          <Stat
+            icon={TrendingUp}
+            label="الربح (قبل الضريبة)"
+            value={`${fmtPrice(s.profit)}${s.revenue_ex_tax ? ` · ${Math.round((100 * Number(s.profit)) / Number(s.revenue_ex_tax))}%` : ""}`}
+            tone="clay"
+          />
+        ) : (
+          <Stat icon={ShoppingBag} label="المبيعات (شامل الضريبة)" value={s ? fmtPrice(s.sales_net) : "—"} />
+        )}
+        <Stat icon={Receipt} label="عدد فواتير البيع" value={s ? fmtQty(s.sales_bills) : "—"} />
+        <Stat icon={Package} label="القطع المباعة" value={s ? fmtQty(s.qty) : "—"} />
+        <Stat icon={Undo2} label="المرتجعات" value={s ? `${fmtQty(s.return_bills)} · ${fmtPrice(s.returns_net)}` : "—"} tone={s && s.return_bills ? "danger" : undefined} />
       </div>
 
       {error && <p className="card text-danger">{error}</p>}
@@ -266,11 +289,24 @@ function Sales() {
   );
 }
 
-function Stat({ label, value, tone }: { label: string; value: string; tone?: "olive" | "danger" }) {
+const TONE = {
+  olive: { tile: "bg-olive-soft text-olive", text: "text-olive" },
+  clay: { tile: "bg-clay-soft text-clay", text: "text-clay-dark" },
+  danger: { tile: "bg-danger-soft text-danger", text: "text-danger" },
+  none: { tile: "bg-sand text-muted", text: "" },
+};
+
+function Stat({ icon: Icon, label, value, tone }: { icon: LucideIcon; label: string; value: string; tone?: "olive" | "clay" | "danger" }) {
+  const t = TONE[tone ?? "none"];
   return (
-    <div className={`card ${tone === "olive" ? "bg-olive-soft" : tone === "danger" ? "bg-danger-soft" : ""}`}>
-      <div className="text-sm text-muted">{label}</div>
-      <div className={`ltr text-start text-2xl font-bold ${tone === "olive" ? "text-olive" : tone === "danger" ? "text-danger" : ""}`}>{value}</div>
+    <div className="card flex items-center gap-3 p-4">
+      <div className={`icon-tile ${t.tile}`}>
+        <Icon size={20} />
+      </div>
+      <div className="min-w-0">
+        <div className="truncate text-sm text-muted">{label}</div>
+        <div className={`ltr text-start text-xl font-bold ${t.text}`}>{value}</div>
+      </div>
     </div>
   );
 }
@@ -316,6 +352,11 @@ function BillRows({
               <span className="chip bg-sand">قبل الضريبة <b className="ltr">{fmtPrice(b.invtotal)}</b></span>
               <span className="chip bg-sand">الخصم <b className="ltr">{fmtPrice(b.disctotal)}</b></span>
               <span className="chip bg-sand">الضريبة <b className="ltr">{fmtPrice(b.taxtotal)}</b></span>
+              {b.profit != null && (
+                <span className="chip bg-clay-soft text-clay-dark">
+                  <TrendingUp size={13} /> الربح <b className="ltr">{fmtPrice(b.profit)}</b>
+                </span>
+              )}
             </div>
             <table className="w-full text-sm">
               <thead className="text-muted">
@@ -326,6 +367,7 @@ function BillRows({
                   <th className="py-1 text-start">الخصم</th>
                   <th className="py-1 text-start">الضريبة</th>
                   <th className="py-1 text-start">الإجمالي</th>
+                  {b.profit != null && <th className="py-1 text-start">الربح</th>}
                 </tr>
               </thead>
               <tbody>
@@ -339,11 +381,12 @@ function BillRows({
                     <td className="ltr py-1 text-start">{fmtPrice(l.discamt)}</td>
                     <td className="ltr py-1 text-start">{fmtPrice(l.taxamt)}</td>
                     <td className="ltr py-1 text-start font-semibold">{fmtPrice(l.itmtotal)}</td>
+                    {b.profit != null && <td className="ltr py-1 text-start text-clay-dark">{l.profit == null ? "—" : fmtPrice(l.profit)}</td>}
                   </tr>
                 ))}
                 {b.lines.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="py-2 text-muted">
+                    <td colSpan={7} className="py-2 text-muted">
                       لم تصل أسطر هذه الفاتورة بعد.
                     </td>
                   </tr>

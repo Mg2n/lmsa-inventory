@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { CheckCircle2, CircleAlert, RefreshCw, Search, X } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { minutesSince, timeAgo } from "@/lib/format";
 import type { LastSync, Location } from "@/lib/types";
@@ -15,15 +16,15 @@ export function Sheet({ open, onClose, title, children }: { open: boolean; onClo
   }, [open, onClose]);
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-40 flex items-end justify-center bg-ink/40 sm:items-center" onClick={onClose}>
+    <div className="fixed inset-0 z-40 flex items-end justify-center bg-ink/30 backdrop-blur-sm sm:items-center" onClick={onClose}>
       <div
-        className="max-h-[90dvh] w-full max-w-lg overflow-y-auto rounded-t-3xl bg-card p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] sm:rounded-3xl"
+        className="glass max-h-[90dvh] w-full max-w-lg overflow-y-auto rounded-t-3xl bg-white/85 p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] sm:rounded-3xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-xl font-bold">{title}</h2>
-          <button onClick={onClose} className="rounded-full bg-sand px-3 py-1 text-muted" aria-label="إغلاق">
-            ✕
+          <button onClick={onClose} className="grid h-9 w-9 place-items-center rounded-xl bg-sand/80 text-muted" aria-label="إغلاق">
+            <X size={18} />
           </button>
         </div>
         {children}
@@ -68,9 +69,11 @@ export function ScanInput({
         ref.current?.focus();
       }}
     >
+      <div className="relative flex-1">
+      <Search size={19} className="pointer-events-none absolute inset-y-0 start-4 my-auto text-muted" />
       <input
         ref={ref}
-        className="input"
+        className="input ps-11"
         value={v}
         autoFocus={autoFocus}
         placeholder={placeholder}
@@ -84,6 +87,7 @@ export function ScanInput({
           onChange?.(e.target.value);
         }}
       />
+      </div>
       <button className="btn-primary shrink-0" type="submit">
         بحث
       </button>
@@ -115,9 +119,9 @@ export function SyncBadge({ sync }: { sync: LastSync | null }) {
   const m = minutesSince(sync?.last_ok_at);
   const stale = m == null || m >= STALE_MINUTES;
   return (
-    <span className={`chip ${stale ? "bg-danger-soft text-danger" : "bg-olive-soft text-olive"}`} title="آخر مزامنة ناجحة مع سبارك تك">
-      <span className={`h-2 w-2 rounded-full ${stale ? "bg-danger" : "bg-olive"}`} />
-      مزامنة: {timeAgo(sync?.last_ok_at)}
+    <span className={`chip whitespace-nowrap ${stale ? "bg-danger-soft/90 text-danger" : "bg-olive-soft/90 text-olive"}`} title="آخر مزامنة ناجحة مع سبارك تك">
+      <RefreshCw size={14} />
+      <span className="hidden sm:inline">مزامنة:</span> {timeAgo(sync?.last_ok_at)}
     </span>
   );
 }
@@ -139,10 +143,11 @@ export function Toast({ message, tone = "ok" }: { message: string | null; tone?:
   if (!message) return null;
   return (
     <div
-      className={`no-print fixed inset-x-4 top-4 z-50 mx-auto max-w-md rounded-2xl px-4 py-3 text-center font-semibold shadow-lg ${
-        tone === "ok" ? "bg-olive text-white" : "bg-danger text-white"
+      className={`no-print fixed inset-x-4 top-4 z-50 mx-auto flex max-w-md items-center justify-center gap-2 rounded-2xl px-4 py-3 text-center font-semibold text-white shadow-[0_12px_30px_rgba(59,47,42,0.25)] backdrop-blur ${
+        tone === "ok" ? "bg-olive/95" : "bg-danger/95"
       }`}
     >
+      {tone === "ok" ? <CheckCircle2 size={19} className="shrink-0" /> : <CircleAlert size={19} className="shrink-0" />}
       {message}
     </div>
   );

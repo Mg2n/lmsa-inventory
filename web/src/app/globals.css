@@ -1,6 +1,7 @@
 @import "tailwindcss";
 
-/* Warm, calm palette: cream background, terracotta accent, olive secondary. */
+/* Warm, calm palette: cream background, terracotta accent, olive secondary.
+   v2 look: soft frosted-glass surfaces over a quiet warm gradient. */
 @theme {
   --color-cream: #fbf6ee;
   --color-sand: #f3eadb;
@@ -20,9 +21,13 @@
   --font-sans: var(--font-arabic), system-ui, sans-serif;
 }
 
-html,
-body {
+html {
   background: var(--color-cream);
+  color: var(--color-ink);
+}
+/* transparent so the fixed gradient (body::before) shows through */
+body {
+  background: transparent;
   color: var(--color-ink);
 }
 
@@ -31,32 +36,53 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* quiet warm backdrop the glass sits on (fixed, behind everything) */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(38rem 30rem at 92% -6%, rgba(194, 103, 74, 0.16), transparent 70%),
+    radial-gradient(34rem 28rem at -8% 30%, rgba(107, 122, 75, 0.14), transparent 70%),
+    radial-gradient(30rem 26rem at 70% 105%, rgba(183, 121, 31, 0.12), transparent 70%),
+    linear-gradient(180deg, #fcf8f1 0%, #f7efe2 100%);
+}
+
 /* quantities and codes read left-to-right inside RTL text */
 .ltr {
   direction: ltr;
   unicode-bidi: isolate;
 }
 
+@utility glass {
+  @apply border border-white/70 bg-white/55 shadow-[0_8px_30px_rgba(59,47,42,0.07)] backdrop-blur-xl backdrop-saturate-150;
+}
 @utility btn {
-  @apply inline-flex items-center justify-center gap-2 rounded-2xl px-4 py-3 font-semibold transition active:scale-[0.98] disabled:opacity-50;
+  @apply inline-flex items-center justify-center gap-2 rounded-2xl px-4 py-3 font-semibold transition duration-200 active:scale-[0.98] disabled:opacity-50;
 }
 @utility btn-primary {
-  @apply btn bg-clay text-white hover:bg-clay-dark;
+  @apply btn bg-gradient-to-b from-[#cc7457] to-clay text-white shadow-[0_6px_16px_rgba(194,103,74,0.28)] hover:to-clay-dark;
 }
 @utility btn-soft {
-  @apply btn bg-sand text-ink hover:bg-line;
+  @apply btn border border-white/70 bg-white/60 text-ink shadow-[0_2px_8px_rgba(59,47,42,0.05)] backdrop-blur hover:bg-white/80;
 }
 @utility btn-olive {
-  @apply btn bg-olive text-white;
+  @apply btn bg-gradient-to-b from-[#76864f] to-olive text-white shadow-[0_6px_16px_rgba(107,122,75,0.25)];
 }
 @utility card {
-  @apply rounded-3xl border border-line bg-card p-5 shadow-[0_2px_10px_rgba(59,47,42,0.05)];
+  @apply glass rounded-3xl p-5;
 }
 @utility input {
-  @apply w-full rounded-2xl border border-line bg-white px-4 py-3 text-lg outline-none focus:border-clay focus:ring-2 focus:ring-clay-soft;
+  @apply w-full rounded-2xl border border-line/80 bg-white/75 px-4 py-3 text-lg outline-none backdrop-blur transition focus:border-clay focus:bg-white focus:ring-4 focus:ring-clay-soft/70;
 }
 @utility chip {
   @apply inline-flex items-center gap-1 rounded-full px-3 py-1 text-sm font-medium;
+}
+/* round icon tile used in headers and stat cards */
+@utility icon-tile {
+  @apply grid h-10 w-10 shrink-0 place-items-center rounded-2xl;
 }
 
 @media print {
@@ -66,5 +92,13 @@ body {
   html,
   body {
     background: white;
+  }
+  body::before {
+    display: none;
+  }
+  .card {
+    backdrop-filter: none;
+    background: white;
+    box-shadow: none;
   }
 }

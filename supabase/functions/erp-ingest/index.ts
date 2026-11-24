@@ -12,7 +12,7 @@ import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 const MAX_ROWS = 1000;
-const TABLES = new Set(["products", "barcodes", "stock", "warehouses"]);
+const TABLES = new Set(["products", "barcodes", "stock", "warehouses", "sales_heads", "sales_lines"]);
 const ACTIONS = new Set(["start", "batch", "finish"]);
 
 function serviceKey(): string {

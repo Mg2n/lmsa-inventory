@@ -72,7 +72,9 @@ function Daily() {
     load();
   }
 
-  const total = (rows ?? []).reduce((a, r) => a + Number(r.sales_net), 0);
+  // net = sales minus returns (returns are stored as positive amounts on document type 108)
+  const net = (r: DayBranch) => Number(r.sales_net) - Number(r.returns_net);
+  const total = (rows ?? []).reduce((a, r) => a + net(r), 0);
   const reviewed = (rows ?? []).filter((r) => r.review).length;
 
   return (
@@ -94,7 +96,7 @@ function Daily() {
         <div className="ms-auto text-start">
           <div className="font-bold">{dayLabel(day)}</div>
           <div className="text-sm text-muted">
-            صافي اليوم <b className="ltr text-ink">{fmtPrice(total)}</b> · تمت مراجعة {reviewed} من {rows?.length ?? 0}
+            صافي اليوم بعد المرتجعات <b className="ltr text-ink">{fmtPrice(total)}</b> · تمت مراجعة {reviewed} من {rows?.length ?? 0}
           </div>
         </div>
       </div>
@@ -117,8 +119,12 @@ function Daily() {
             </div>
 
             <div className="rounded-3xl bg-olive-soft p-4 text-center">
-              <div className="text-sm text-muted">صافي المبيعات (شامل الضريبة)</div>
-              <div className="ltr text-4xl font-bold text-olive">{fmtPrice(r.sales_net)}</div>
+              <div className="text-sm text-muted">الصافي بعد المرتجعات (شامل الضريبة)</div>
+              <div className="ltr text-4xl font-bold text-olive">{fmtPrice(net(r))}</div>
+              <div className="mt-1 text-sm text-muted">
+                مبيعات <b className="ltr text-ink">{fmtPrice(r.sales_net)}</b>
+                {" − "}مرتجعات <b className={`ltr ${Number(r.returns_net) ? "text-danger" : "text-ink"}`}>{fmtPrice(r.returns_net)}</b>
+              </div>
             </div>
             <div className="grid grid-cols-3 gap-2 text-center text-sm">
               <div className="rounded-2xl bg-sand p-2">

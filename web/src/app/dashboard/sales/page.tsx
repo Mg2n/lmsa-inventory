@@ -208,8 +208,9 @@ function Sales() {
       </div>
 
       {/* totals */}
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <Stat label="صافي المبيعات (شامل الضريبة)" value={s ? fmtPrice(s.sales_net) : "—"} tone="olive" />
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        <Stat label="الصافي بعد المرتجعات" value={s ? fmtPrice(Number(s.sales_net) - Number(s.returns_net)) : "—"} tone="olive" />
+        <Stat label="المبيعات (شامل الضريبة)" value={s ? fmtPrice(s.sales_net) : "—"} />
         <Stat label="عدد فواتير البيع" value={s ? fmtQty(s.sales_bills) : "—"} />
         <Stat label="القطع المباعة" value={s ? fmtQty(s.qty) : "—"} />
         <Stat label="المرتجعات" value={s ? `${fmtQty(s.return_bills)} · ${fmtPrice(s.returns_net)}` : "—"} tone={s && s.return_bills ? "danger" : undefined} />

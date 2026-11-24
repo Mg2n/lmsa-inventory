@@ -37,14 +37,14 @@ $DryTaskName = 'InventorySync-DryRun'
 $AccountName = 'inventory_sync'
 $Computer = $env:COMPUTERNAME
 # What the agent may read. '*' = whole table; otherwise only these columns
-# (bill headers: no customer, cost or ZATCA columns; sale lines: no cost).
+# (bill headers: no customer or ZATCA columns; cost is included for the admin profit view).
 $Grants = [ordered]@{
     ITEMES      = '*'
     ITMUNIT     = '*'
     ITEMSMASTER = '*'
     WAREHOUSES  = '*'
-    ITMSALES    = 'BRNID, GLTYPE, VOUNO, INVSERIAL, WHSNO, ITMCODE, UNITCODE, UFACT, SALEQTY, UNITPRICE, DISCAMT, TAXAMT, ITMTOTAL'
-    GLVOUHEAD   = 'BRNID, GLTYPE, VOUNO, WHSNO, VOUDATE, SELLERNO, USERNO, POSNO, SHIFTNO, SHIFTID, INVQTY, INVTOTAL, DISCTOTAL, TAXTOTAL, INVNETAMT, ACTIVATE'
+    ITMSALES    = 'BRNID, GLTYPE, VOUNO, INVSERIAL, WHSNO, ITMCODE, UNITCODE, UFACT, SALEQTY, UNITPRICE, DISCAMT, TAXAMT, ITMTOTAL, TOTALCOST'
+    GLVOUHEAD   = 'BRNID, GLTYPE, VOUNO, WHSNO, VOUDATE, SELLERNO, USERNO, POSNO, SHIFTNO, SHIFTID, INVQTY, INVTOTAL, DISCTOTAL, TAXTOTAL, INVNETAMT, INVCOSTAMT, ACTIVATE'
 }
 
 # Built-in groups by SID (their names are translated on Arabic Windows)

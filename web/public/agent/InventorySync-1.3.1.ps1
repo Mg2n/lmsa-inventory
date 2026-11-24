@@ -37,7 +37,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 
-$AgentVersion = '1.3.0'
+$AgentVersion = '1.3.1'
 # Windows PowerShell 5.1: $PSScriptRoot is empty inside param() defaults, so resolve here
 $Root = $PSScriptRoot
 if (-not $Root) { $Root = Split-Path -Parent $MyInvocation.MyCommand.Path }
@@ -70,10 +70,12 @@ $Tables = [ordered]@{
     sales_heads = @{ Source = 'GLVOUHEAD'; Key = @('BRNID', 'GLTYPE', 'VOUNO');
                     Columns = @('BRNID', 'GLTYPE', 'VOUNO', 'WHSNO', 'VOUDATE', 'SELLERNO', 'USERNO', 'POSNO', 'SHIFTNO', 'SHIFTID',
                                 'INVQTY', 'INVTOTAL', 'DISCTOTAL', 'TAXTOTAL', 'INVNETAMT', 'ACTIVATE');
+                    Optional = @('INVCOSTAMT');   # cost, read only once SQL Server grants it (profit)
                     Where = 'GLTYPE IN (SELECT DISTINCT GLTYPE FROM ITMSALES WITH (NOLOCK))' }
     sales_lines = @{ Source = 'ITMSALES';  Key = @('BRNID', 'GLTYPE', 'VOUNO', 'INVSERIAL');
                     Columns = @('BRNID', 'GLTYPE', 'VOUNO', 'INVSERIAL', 'WHSNO', 'ITMCODE', 'UNITCODE', 'UFACT', 'SALEQTY',
-                                'UNITPRICE', 'DISCAMT', 'TAXAMT', 'ITMTOTAL') }
+                                'UNITPRICE', 'DISCAMT', 'TAXAMT', 'ITMTOTAL');
+                    Optional = @('TOTALCOST') }
 }
 $AllowedSourceTables = @('ITEMES', 'ITMUNIT', 'ITEMSMASTER', 'WAREHOUSES', 'ITMSALES', 'GLVOUHEAD')
 # columns whose raw value matters (leading/trailing spaces are data-quality signals)
@@ -292,7 +294,30 @@ function Get-SelectSql($Def) {
     return $sql
 }
 
+# Optional columns (cost) are read only if SQL Server allows it; a column-level
+# "SELECT permission denied" (error 230) falls back to the required columns.
+$script:OptionalDenied = @{}
+function Get-FullDef($Def) {
+    if (-not $Def.ContainsKey('Optional')) { return $Def }
+    $full = $Def.Clone(); $full.Columns = @($Def.Columns + $Def.Optional); $full.Remove('Optional')
+    return $full
+}
+
 function Read-SqlTable($Connection, [string]$Name, $Def, [int]$TimeoutSeconds) {
+    if ($Def.ContainsKey('Optional')) {
+        try { return , (Read-SqlTableCore $Connection $Name (Get-FullDef $Def) $TimeoutSeconds) }
+        catch {
+            $sqlEx = $_.Exception
+            while ($sqlEx -and $sqlEx -isnot [System.Data.SqlClient.SqlException]) { $sqlEx = $sqlEx.InnerException }
+            if (-not $sqlEx -or $sqlEx.Number -ne 230) { throw }
+            $script:OptionalDenied[$Name] = $true
+            Write-Log 'INFO' ("{0}: no permission for {1} yet - syncing without it" -f $Name, ($Def.Optional -join ', '))
+        }
+    }
+    return , (Read-SqlTableCore $Connection $Name $Def $TimeoutSeconds)
+}
+
+function Read-SqlTableCore($Connection, [string]$Name, $Def, [int]$TimeoutSeconds) {
     $sql = Get-SelectSql $Def
     Assert-ReadOnlySql $sql
     $cmd = $Connection.CreateCommand()
@@ -453,7 +478,7 @@ try {
     $current = [ordered]@{}
     if ($SourceJson) {
         $fixture = [System.IO.File]::ReadAllText($SourceJson, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
-        foreach ($t in $Tables.Keys) { $current[$t] = Read-FixtureTable $fixture $t $Tables[$t] }
+        foreach ($t in $Tables.Keys) { $current[$t] = Read-FixtureTable $fixture $t (Get-FullDef $Tables[$t]) }
     } else {
         if ($config.SqlUser -ne 'inventory_sync') { throw "Refusing to run: SqlUser must be 'inventory_sync' (read-only login)." }
         $auth = 'Sql'; if ($config.PSObject.Properties['SqlAuth'] -and $config.SqlAuth) { $auth = [string]$config.SqlAuth }

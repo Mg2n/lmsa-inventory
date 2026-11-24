@@ -9,3 +9,6 @@ secrets/
 agent/out/
 .DS_Store
 .vercel
+
+# video build scratch
+brag-output/work/

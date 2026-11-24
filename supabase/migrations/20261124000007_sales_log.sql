@@ -270,7 +270,9 @@ create or replace function public.sales_bills(
 returns jsonb language sql stable security definer set search_path = ''
 as $$
   with b as (
-    select h.*
+    -- Spark Tech leaves INVQTY at 0 on POS bills, so pieces are counted from the lines
+    select h.*, coalesce((select sum(l.saleqty) from public.erp_sales_lines l
+                           where l.brnid = h.brnid and l.gltype = h.gltype and l.vouno = h.vouno), 0) as line_qty
     from public.erp_sales_heads h
     where private.is_admin()
       and h.voudate >= p_from and h.voudate < p_to
@@ -285,15 +287,15 @@ as $$
   select jsonb_build_object(
     'total', (select count(*) from b),
     'sums', (select jsonb_build_object(
-               'sales_net',   coalesce(sum(invnetamt) filter (where gltype <> '108'), 0),
-               'returns_net', coalesce(sum(invnetamt) filter (where gltype = '108'), 0),
-               'sales_bills', count(*) filter (where gltype <> '108'),
-               'return_bills', count(*) filter (where gltype = '108'),
-               'qty', coalesce(sum(invqty) filter (where gltype <> '108'), 0)) from b),
+               'sales_net',   coalesce(sum(invnetamt) filter (where is_active and gltype <> '108'), 0),
+               'returns_net', coalesce(sum(invnetamt) filter (where is_active and gltype = '108'), 0),
+               'sales_bills', count(*) filter (where is_active and gltype <> '108'),
+               'return_bills', count(*) filter (where is_active and gltype = '108'),
+               'qty', coalesce(sum(line_qty) filter (where is_active and gltype <> '108'), 0)) from b),
     'bills', coalesce((select jsonb_agg(jsonb_build_object(
         'brnid', p.brnid, 'gltype', p.gltype, 'vouno', p.vouno, 'voudate', p.voudate, 'whsno', p.whsno,
         'whs_name', coalesce(wn.name, ew.name), 'posno', p.posno, 'sellerno', p.sellerno, 'userno', p.userno,
-        'shiftno', p.shiftno, 'invqty', p.invqty, 'invtotal', p.invtotal, 'disctotal', p.disctotal,
+        'shiftno', p.shiftno, 'invqty', p.line_qty, 'invtotal', p.invtotal, 'disctotal', p.disctotal,
         'taxtotal', p.taxtotal, 'invnetamt', p.invnetamt, 'is_active', p.is_active,
         'lines', coalesce((select jsonb_agg(jsonb_build_object(
                     'invserial', l.invserial, 'itmcode', l.itmcode, 'name_ar', pr.name_ar, 'saleqty', l.saleqty,

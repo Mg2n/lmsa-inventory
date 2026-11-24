@@ -91,6 +91,15 @@ function Sales() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // opened from the daily review: ?day=YYYY-MM-DD&whs=3
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const d = q.get("day");
+    if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) { setPreset("custom"); setFrom(d); setTo(d); }
+    const w = q.get("whs");
+    if (w) setWhsno(w);
+  }, []);
+
   useEffect(() => {
     supabase.rpc("sales_warehouses").then(({ data }) => setWarehouses((data as { whsno: string; name: string | null }[]) ?? []));
   }, []);

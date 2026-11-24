@@ -4,8 +4,8 @@
 
 .DESCRIPTION
   Windows PowerShell 5.1, no installs. Runs every 5 minutes as a scheduled task.
-  * Only SELECT ... WITH (NOLOCK) on ITEMES, ITMUNIT, ITEMSMASTER, WAREHOUSES
-    (ITMSALES copying is a v1 TODO). A guard refuses any other SQL.
+  * Only SELECT ... WITH (NOLOCK) on ITEMES, ITMUNIT, ITEMSMASTER, WAREHOUSES and,
+    for the sales log, chosen columns of GLVOUHEAD and ITMSALES. A guard refuses any other SQL.
   * Sends only rows that changed since the last successful run (plus deletes);
     a full snapshot is sent once every FullSyncHours (default 24).
   * Batches of 500 rows, TLS 1.2, retries with backoff, 60 s SQL timeout,
@@ -37,7 +37,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 
-$AgentVersion = '1.2.1'
+$AgentVersion = '1.3.0'
 # Windows PowerShell 5.1: $PSScriptRoot is empty inside param() defaults, so resolve here
 $Root = $PSScriptRoot
 if (-not $Root) { $Root = Split-Path -Parent $MyInvocation.MyCommand.Path }
@@ -65,8 +65,17 @@ $Tables = [ordered]@{
                     Sum = @('BEGINQTY', 'PURCHQTY', 'SALEQTY', 'PURCHRTN', 'SALERTN', 'INQTY', 'OUTQTY', 'RESERVQTY') }
     warehouses = @{ Source = 'WAREHOUSES';  Key = @('BRNID', 'WHSNO');
                     Columns = @('WHSNO', 'BRNID', 'WHSNAME') }
+    # sales audit log: bill headers (sales document types only) and their lines.
+    # No customer, cost or ZATCA columns; SQL Server grants only these columns.
+    sales_heads = @{ Source = 'GLVOUHEAD'; Key = @('BRNID', 'GLTYPE', 'VOUNO');
+                    Columns = @('BRNID', 'GLTYPE', 'VOUNO', 'WHSNO', 'VOUDATE', 'SELLERNO', 'USERNO', 'POSNO', 'SHIFTNO', 'SHIFTID',
+                                'INVQTY', 'INVTOTAL', 'DISCTOTAL', 'TAXTOTAL', 'INVNETAMT', 'ACTIVATE');
+                    Where = 'GLTYPE IN (SELECT DISTINCT GLTYPE FROM ITMSALES WITH (NOLOCK))' }
+    sales_lines = @{ Source = 'ITMSALES';  Key = @('BRNID', 'GLTYPE', 'VOUNO', 'INVSERIAL');
+                    Columns = @('BRNID', 'GLTYPE', 'VOUNO', 'INVSERIAL', 'WHSNO', 'ITMCODE', 'UNITCODE', 'UFACT', 'SALEQTY',
+                                'UNITPRICE', 'DISCAMT', 'TAXAMT', 'ITMTOTAL') }
 }
-$AllowedSourceTables = @('ITEMES', 'ITMUNIT', 'ITEMSMASTER', 'WAREHOUSES', 'ITMSALES')
+$AllowedSourceTables = @('ITEMES', 'ITMUNIT', 'ITEMSMASTER', 'WAREHOUSES', 'ITMSALES', 'GLVOUHEAD')
 # columns whose raw value matters (leading/trailing spaces are data-quality signals)
 $KeepRawColumns = @('BARCODE')
 
@@ -220,13 +229,31 @@ public static class InvSyncFast {
             if (parts.Length != 3) continue;
             Dictionary<string, string> rows;
             if (!tables.TryGetValue(parts[0], out rows)) { rows = new Dictionary<string, string>(); tables[parts[0]] = rows; }
-            rows[parts[1]] = parts[2];
+            rows[Unescape(parts[1])] = parts[2];
         }
         return tables;
     }
 
     public static void WriteSnapshot(TextWriter w, string table, Dictionary<string, string> rows) {
-        foreach (var kv in rows) { w.Write(table); w.Write('\t'); w.Write(kv.Key); w.Write('\t'); w.WriteLine(kv.Value); }
+        foreach (var kv in rows) { w.Write(table); w.Write('\t'); w.Write(Escape(kv.Key)); w.Write('\t'); w.WriteLine(kv.Value); }
+    }
+
+    // keys are written escaped so a tab or line break inside an item code cannot split the line
+    static string Escape(string k) {
+        if (k.IndexOfAny(new[] { '\\', '\t', '\r', '\n' }) < 0) return k;
+        return k.Replace("\\", "\\\\").Replace("\t", "\\t").Replace("\r", "\\r").Replace("\n", "\\n");
+    }
+    static string Unescape(string k) {
+        if (k.IndexOf('\\') < 0) return k;
+        var sb = new StringBuilder(k.Length);
+        for (int i = 0; i < k.Length; i++) {
+            char c = k[i];
+            if (c == '\\' && i + 1 < k.Length) {
+                char n = k[++i];
+                sb.Append(n == 't' ? '\t' : n == 'r' ? '\r' : n == 'n' ? '\n' : n);
+            } else sb.Append(c);
+        }
+        return sb.ToString();
     }
 }
 '@
@@ -260,7 +287,9 @@ function Get-SelectSql($Def) {
         $cols = foreach ($c in $Def.Columns) { if ($Def.Sum -contains $c) { "SUM($c) AS $c" } else { $c } }
         return 'SELECT {0} FROM {1} WITH (NOLOCK) GROUP BY {2}' -f ($cols -join ', '), $Def.Source, ($Def.Key -join ', ')
     }
-    return 'SELECT {0} FROM {1} WITH (NOLOCK)' -f ($Def.Columns -join ', '), $Def.Source
+    $sql = 'SELECT {0} FROM {1} WITH (NOLOCK)' -f ($Def.Columns -join ', '), $Def.Source
+    if ($Def.ContainsKey('Where')) { $sql += ' WHERE ' + $Def.Where }
+    return $sql
 }
 
 function Read-SqlTable($Connection, [string]$Name, $Def, [int]$TimeoutSeconds) {

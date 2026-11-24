@@ -23,7 +23,7 @@ if (-not $Force) {
     if ($answer -notmatch '^(y|yes)$') { Write-Host 'Cancelled.'; exit 0 }
 }
 
-foreach ($name in @('InventorySync', 'InventorySync-DryRun')) {
+foreach ($name in @('InventorySync', 'InventorySync-DryRun', 'InventorySync-Update')) {
     if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {
         Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
         Unregister-ScheduledTask -TaskName $name -Confirm:$false

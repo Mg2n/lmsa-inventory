@@ -170,9 +170,13 @@ To do on site (needs the real devices / data):
 
 - **Quantities count only the store's warehouse** (decided 2026-11-24): Spark Tech's `ITEMSMASTER` holds every item in 6 warehouses (WHSNO 1–6); the store is warehouse **3 "فرع عريجا"** — confirmed by the owner (item 001 = 16 in Spark Tech, not 48 for all six). All warehouses are still synced; `public.stock_warehouses` lists which ones count (empty = all), and `v_store_stock` feeds the totals. To change it: `insert into public.stock_warehouses (brnid, whsno, note) values ('1','4','…');` (admin).
 
+- **Sales log + daily review** (decided 2026-11-24): agent 1.3 reads bill headers from `GLVOUHEAD` (only the sales document types found in `ITMSALES`: 104 sales, 108 returns, 71) and lines from `ITMSALES`. SQL Server grants the agent **only the listed columns** of those two tables — no customer (BENEF*), cost or ZATCA columns. Pages *سجل المبيعات* and *المراجعة اليومية* are admin-only; bills marked inactive (ACTIVATE = 0, assumed cancelled) are listed but left out of totals. Purchases/transfers: the store's Spark Tech has none (ITMPURCHASE / ITMSTKDET / ITMSTKHEAD are empty), so there is nothing to copy.
+- **Signed self-update** (decided 2026-11-24): `scripts/publish-agent.py` signs `agent/InventorySync.ps1` with `secrets/agent_signing_key.pem` (RSA-3072, git-ignored, never leaves the owner's Mac) and writes `web/public/agent/manifest.json` + the script; a push deploys it. On the store PC the SYSTEM task `InventorySync-Update` (every 6 h) runs `Update-Agent.ps1`, which installs a newer agent only if the SHA-256 and signature check out against `update-public-key.xml`, keeps the previous one as `InventorySync.prev.ps1`, and never touches SQL Server, Spark Tech or config. New SQL permissions still need SSMS.
+
+**Releasing an agent update:** bump `$AgentVersion` in `agent/InventorySync.ps1` → `source ~/venv/bin/activate && python scripts/publish-agent.py` → commit + push. Store PCs update within 6 hours (log: `C:\InventorySync\logs\update-*.log`; the Sync page shows the new version).
+
 ## TODO (skipped in v1)
 
-- [ ] Copy new ITMSALES lines into `erp_sales` (table exists; need the real line-serial column from Spark Tech, then add a `sales` table to the agent with a "since last key" query).
 - [ ] CSV export of products / movements.
 - [ ] Realtime updates on the dashboard when a phone changes a location (Supabase Realtime on `product_locations`).
 - [ ] English toggle (move inline strings to a dictionary).

@@ -10,7 +10,7 @@
     only Administrators and SYSTEM can change it; inventory_sync can read it and write
     only to logs, state and out.
   * Writes create-login.sql to your Desktop and waits while you run it in SSMS
-    (read-only access to 4 Spark Tech tables for that Windows account).
+    (read-only access to 4 Spark Tech tables, plus chosen columns of 2 sales tables).
   * Runs a DRY RUN as inventory_sync (reads Spark Tech, writes a local JSON file, sends nothing).
   * Registers the scheduled task "InventorySync" as inventory_sync: every 5 minutes,
     below-normal priority, 4-minute limit, never two at once, runs with nobody logged in.
@@ -27,6 +27,7 @@ param(
     [string]$SqlServer = '.',
     [string]$SqlDatabase = 'Spark',
     [string]$SecretFile,
+    [string]$UpdateUrl = 'https://lmsa-inventory-smvy.vercel.app/agent/manifest.json',
     [switch]$SkipDryRun,
     [switch]$Force
 )
@@ -35,7 +36,16 @@ $TaskName = 'InventorySync'
 $DryTaskName = 'InventorySync-DryRun'
 $AccountName = 'inventory_sync'
 $Computer = $env:COMPUTERNAME
-$Tables = @('ITEMES', 'ITMUNIT', 'ITEMSMASTER', 'WAREHOUSES')
+# What the agent may read. '*' = whole table; otherwise only these columns
+# (bill headers: no customer, cost or ZATCA columns; sale lines: no cost).
+$Grants = [ordered]@{
+    ITEMES      = '*'
+    ITMUNIT     = '*'
+    ITEMSMASTER = '*'
+    WAREHOUSES  = '*'
+    ITMSALES    = 'BRNID, GLTYPE, VOUNO, INVSERIAL, WHSNO, ITMCODE, UNITCODE, UFACT, SALEQTY, UNITPRICE, DISCAMT, TAXAMT, ITMTOTAL'
+    GLVOUHEAD   = 'BRNID, GLTYPE, VOUNO, WHSNO, VOUDATE, SELLERNO, USERNO, POSNO, SHIFTNO, SHIFTID, INVQTY, INVTOTAL, DISCTOTAL, TAXTOTAL, INVNETAMT, ACTIVATE'
+}
 
 # Built-in groups by SID (their names are translated on Arabic Windows)
 $SidAdmins = New-Object Security.Principal.SecurityIdentifier('S-1-5-32-544')
@@ -163,6 +173,9 @@ foreach ($d in @($InstallDir, "$InstallDir\logs", "$InstallDir\state", "$Install
     if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d | Out-Null }
 }
 Copy-Item -Path (Join-Path $PSScriptRoot 'InventorySync.ps1') -Destination "$InstallDir\InventorySync.ps1" -Force
+# self-update: the updater and the public key it checks signatures with
+Copy-Item -Path (Join-Path $PSScriptRoot 'Update-Agent.ps1') -Destination "$InstallDir\Update-Agent.ps1" -Force
+Copy-Item -Path (Join-Path $PSScriptRoot 'update-public-key.xml') -Destination "$InstallDir\update-public-key.xml" -Force
 
 $configPath = "$InstallDir\config.json"
 $syncSecret = $null
@@ -177,7 +190,7 @@ if (-not $syncSecret) { $syncSecret = Read-SyncSecret }
 # always rewrite the rest so new defaults (e.g. time limits) apply
 $config = [ordered]@{
     SqlServer = $SqlServer; SqlDatabase = $SqlDatabase; SqlAuth = 'Windows'; SqlUser = $AccountName
-    IngestUrl = $IngestUrl; SyncSecret = $syncSecret
+    IngestUrl = $IngestUrl; SyncSecret = $syncSecret; UpdateUrl = $UpdateUrl
     BatchSize = 500; FullSyncHours = 24; SqlTimeoutSeconds = 90; MaxRunSeconds = 230
 }
 [IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
@@ -210,10 +223,12 @@ Write-Step '3/6  Read-only access in SQL Server (you do this in SSMS)'
 $login = "$Computer\$AccountName"
 # The database user is named after the Windows login and found by SID, so an older
 # user called 'inventory_sync' (e.g. from a SQL login) can never be picked up by mistake.
-$grants = ($Tables | ForEach-Object { "GRANT SELECT ON dbo.$_ TO [$login];" }) -join "`r`n"
+$grants = ($Grants.Keys | ForEach-Object {
+    if ($Grants[$_] -eq '*') { "GRANT SELECT ON dbo.$_ TO [$login];" } else { "GRANT SELECT ON dbo.$_ ($($Grants[$_])) TO [$login];" }
+}) -join "`r`n"
 $sql = @"
 -- InventorySync: read-only access for the Windows account $login
--- Creates a login and gives SELECT on $($Tables.Count) tables only. Changes no data.
+-- Creates a login and gives SELECT only (whole table or listed columns). Changes no data.
 USE [master];
 IF NOT EXISTS (SELECT 1 FROM sys.server_principals WHERE name = N'$login')
     CREATE LOGIN [$login] FROM WINDOWS WITH DEFAULT_DATABASE = [$SqlDatabase];
@@ -301,9 +316,23 @@ Register-AgentTask $TaskName '' $trigger 'Read-only Spark Tech -> Supabase inven
 $password = $null
 Write-Host "Task '$TaskName' created; it runs as $Computer\$AccountName." -ForegroundColor Green
 
+# Self-update: every 6 hours, as SYSTEM (inventory_sync cannot change its own script).
+# Installs only agents signed with the project owner's private key; see Update-Agent.ps1.
+$UpdateTaskName = 'InventorySync-Update'
+if (Get-ScheduledTask -TaskName $UpdateTaskName -ErrorAction SilentlyContinue) { Unregister-ScheduledTask -TaskName $UpdateTaskName -Confirm:$false }
+$uAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
+    -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}\Update-Agent.ps1"' -f $InstallDir) -WorkingDirectory $InstallDir
+$uTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(10) -RepetitionInterval (New-TimeSpan -Hours 6)
+$uSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 5) -Priority 7 -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+$uPrincipal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+Register-ScheduledTask -TaskName $UpdateTaskName -Action $uAction -Trigger $uTrigger -Settings $uSettings -Principal $uPrincipal `
+    -Description 'Installs signed InventorySync agent updates (every 6 hours).' | Out-Null
+Write-Host "Task '$UpdateTaskName' created (signed self-update, every 6 hours)." -ForegroundColor Green
+
 Write-Step '6/6  Done'
 Write-Host 'The first sync runs in about 1 minute. Check the Sync page in the app.' -ForegroundColor Green
 Write-Host "  Logs:       $InstallDir\logs"
 Write-Host "  Run now:    Start-ScheduledTask -TaskName $TaskName"
 Write-Host "  Status:     Get-ScheduledTaskInfo -TaskName $TaskName   (LastTaskResult 0 = OK)"
+Write-Host "  Updates:    automatic (signed); log in $InstallDir\logs\update-*.log"
 Write-Host "  Uninstall:  powershell -ExecutionPolicy Bypass -File .\uninstall.ps1"

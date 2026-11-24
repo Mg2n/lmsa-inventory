@@ -11,6 +11,7 @@ const NAV = [
   { href: "/dashboard/locations/", label: "المواقع والملصقات" },
   { href: "/dashboard/sync/", label: "المزامنة" },
   { href: "/dashboard/check/", label: "مطابقة الكمية" },
+  { href: "/dashboard/sales/", label: "سجل المبيعات", admin: true },
   { href: "/dashboard/users/", label: "المستخدمون", admin: true },
 ];
 
